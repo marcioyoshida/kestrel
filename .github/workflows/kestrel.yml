@@ -43,6 +43,41 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: deploy/helm/kestrel/ci/test.sh
 
+  gorm-dynamodb:
+    name: GORM DynamoDB datastore
+    runs-on: ubuntu-24.04
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.1
+        ports: ["8000:8000"]
+    env:
+      KESTREL_DYNAMODB_ENDPOINT: http://localhost:8000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify Gradle wrapper
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^distributionUrl=.*gradle-\([0-9.]*\)-bin.zip$/\1/p' gradle/wrapper/gradle-wrapper.properties)
+          echo "$(curl -fsSL "https://services.gradle.org/distributions/gradle-${v}-wrapper.jar.sha256")  gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          validate-wrappers: false
+      - name: Datastore spec against DynamoDB Local
+        run: ./gradlew :kestrel-gorm-dynamodb:test
+      - name: Results
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, xml.etree.ElementTree as E
+          for f in glob.glob('kestrel-gorm-dynamodb/build/test-results/test/*.xml'):
+              r = E.parse(f).getroot()
+              print(f"{r.get('name')}: {r.get('tests')} tests, {r.get('failures')} failures, {r.get('errors')} errors, {r.get('skipped')} skipped")
+          PY
+
   infra:
     name: CDK synth
     runs-on: ubuntu-24.04

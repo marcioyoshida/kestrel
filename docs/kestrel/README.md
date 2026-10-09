@@ -50,6 +50,7 @@ Teardown leaves only the ECR repository and the GitHub OIDC role.
 - [ADR 0001: EKS-native architecture](adr/0001-eks-native-architecture.md)
 - [ADR 0002: UI modernization](adr/0002-ui-modernization.md)
 - [ADR 0003: M1 Kubernetes scheduler as built](adr/0003-m1-kubernetes-scheduler.md)
+- [ADR 0004: M2 DynamoDB persistence through a GORM datastore](adr/0004-m2-dynamodb-gorm-datastore.md)
 
 ## Known upstream issues
 

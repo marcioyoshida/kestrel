@@ -1,0 +1,77 @@
+package org.rundeck.kestrel.gorm.dynamodb
+
+import groovy.transform.CompileStatic
+import org.grails.datastore.mapping.config.Settings
+import org.grails.datastore.mapping.core.Session
+import org.grails.datastore.mapping.core.connections.ConnectionSourcesInitializer
+import org.grails.datastore.mapping.core.DatastoreUtils
+import org.grails.datastore.mapping.keyvalue.mapping.config.KeyValue
+import org.grails.datastore.mapping.model.PersistentEntity
+import org.grails.datastore.mapping.model.PersistentProperty
+import org.grails.datastore.mapping.model.types.ToOne
+import org.grails.datastore.mapping.simple.SimpleMapDatastore
+import org.grails.datastore.mapping.simple.connections.SimpleMapConnectionSourceFactory
+import org.springframework.context.ApplicationEventPublisher
+import org.springframework.core.env.PropertyResolver
+import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
+import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient
+
+/**
+ * GORM datastore on DynamoDB (ADR 0004). Reuses GORM's simple datastore for the GORM plumbing
+ * (static API, validation, transaction manager, connection sources) and replaces its in-memory
+ * storage with DynamoDB: one table per root entity, a shared index table, numeric id blocks.
+ *
+ * <p>Indexed properties (equality queries without a table scan): every to-one association (its
+ * foreign key), every property mapped with {@code index: true}, and the names passed in
+ * {@code indexed} as {@code ClassSimpleName.property}.
+ */
+@CompileStatic
+class DynamoDatastore extends SimpleMapDatastore {
+    final DynamoDbClient client
+    final DynamoTables tables
+    final IdAllocator ids
+    private final ConfigurableApplicationEventPublisher publisher
+
+    /**
+     * @param client      DynamoDB client
+     * @param tablePrefix table name prefix
+     * @param createTables create missing tables
+     * @param indexed     extra indexed properties, `Entity.property`
+     * @param config      GORM configuration
+     * @param publisher   event publisher
+     * @param classes     domain classes mapped to this datastore
+     */
+    DynamoDatastore(DynamoDbClient client, String tablePrefix, boolean createTables, Collection<String> indexed,
+                    PropertyResolver config, ConfigurableApplicationEventPublisher publisher, Class... classes) {
+        super(ConnectionSourcesInitializer.create(new SimpleMapConnectionSourceFactory(), config), publisher, classes)
+        this.client = client
+        this.tables = new DynamoTables(client, tablePrefix, createTables)
+        this.ids = new IdAllocator(tables, 100L)
+        this.publisher = publisher
+        markIndexed(indexed ?: [])
+    }
+
+    /** Convenience for tests: defaults, no extra indexes. */
+    DynamoDatastore(DynamoDbClient client, String tablePrefix, Class... classes) {
+        this(client, tablePrefix, true, [], DatastoreUtils.createPropertyResolver([(Settings.SETTING_FAIL_ON_ERROR): false]),
+            new DefaultApplicationEventPublisher(), classes)
+    }
+
+    private void markIndexed(Collection<String> indexed) {
+        for (PersistentEntity entity : mappingContext.persistentEntities) {
+            for (PersistentProperty p : entity.persistentProperties) {
+                boolean wanted = p instanceof ToOne || indexed.contains(entity.javaClass.simpleName + '.' + p.name)
+                def form = p.mapping?.mappedForm
+                if (wanted && form instanceof KeyValue) {
+                    ((KeyValue) form).setIndex(true)
+                }
+            }
+        }
+    }
+
+    @Override
+    protected Session createSession(PropertyResolver connectionDetails) {
+        new DynamoSession(this, mappingContext, publisher)
+    }
+}

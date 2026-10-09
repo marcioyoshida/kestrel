@@ -1,0 +1,67 @@
+/**
+ * Kestrel M2 (ADR 0004): a GORM datastore on DynamoDB. Domain classes opt in with
+ * `static mapWith = "dynamodb"`; upstream code keeps using GORM finders, criteria and save().
+ * Built on GORM's key-value engine (the same base as GORM's simple in-memory datastore).
+ *
+ * rundeckapp consumes the `shaded` artifact (AWS SDK relocated, as in kestrel-scheduler).
+ */
+plugins {
+    id 'com.gradleup.shadow' version '8.3.9'
+}
+apply from: "../gradle/java-version.gradle"
+apply plugin: 'groovy'
+apply plugin: 'java-library'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    // GORM and Groovy come from rundeckapp at runtime.
+    compileOnly "org.apache.groovy:groovy:${groovyVersion}"
+    compileOnly "org.apache.grails.data:grails-data-simple:${grailsVersion}"
+    compileOnly "org.apache.grails.data:grails-datastore-core:${grailsVersion}"
+    compileOnly "org.apache.grails.data:grails-datamapping-core:${grailsVersion}"
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+    compileOnly "com.github.ben-manes.caffeine:caffeine:${caffeineVersion}"
+
+    implementation platform("software.amazon.awssdk:bom:${awsSdkV2Version}")
+    implementation("software.amazon.awssdk:dynamodb") {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache5-client'
+    }
+    implementation "software.amazon.awssdk:url-connection-client"
+
+    testImplementation "org.apache.groovy:groovy-all:${groovyVersion}"
+    testImplementation "org.apache.grails.data:grails-data-simple:${grailsVersion}"
+    testImplementation "org.apache.grails.data:grails-datastore-core:${grailsVersion}"
+    testImplementation "org.apache.grails.data:grails-datamapping-core:${grailsVersion}"
+    testImplementation "com.github.ben-manes.caffeine:caffeine:${caffeineVersion}"
+    testImplementation "org.spockframework:spock-core:${spockVersion}"
+    testImplementation "org.slf4j:slf4j-simple:${slf4jVersion}"
+}
+
+shadowJar {
+    archiveClassifier = 'shaded'
+    relocate 'software.amazon', 'org.rundeck.kestrel.shaded.software.amazon'
+    relocate 'org.reactivestreams', 'org.rundeck.kestrel.shaded.org.reactivestreams'
+    mergeServiceFiles()
+}
+
+configurations {
+    shaded {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+artifacts {
+    shaded shadowJar
+}
+
+test {
+    useJUnitPlatform()
+    // Integration tests run against DynamoDB Local (CI service container, or a local java -jar).
+    environment 'KESTREL_DYNAMODB_ENDPOINT', System.getenv('KESTREL_DYNAMODB_ENDPOINT') ?: 'http://localhost:8000'
+}
