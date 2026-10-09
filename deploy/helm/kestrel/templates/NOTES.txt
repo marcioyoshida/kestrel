@@ -1,0 +1,10 @@
+Kestrel (M0) installed as {{ include "kestrel.fullname" . }}.
+
+- Web: {{ .Values.web.replicas }} replica(s), scheduler mode "{{ .Values.scheduler.mode }}".
+- Internal ALB: kubectl get ingress {{ include "kestrel.fullname" . }}-web -n {{ .Release.Namespace }}
+  Point a CloudFront VPC Origin at that ALB. Also block /monitoring/* at CloudFront.
+- Public URL: {{ .Values.publicUrl }}
+
+Smoke test after the pod is Ready:
+  curl -s -o /dev/null -w '%{http_code}\n' {{ .Values.publicUrl }}/monitoring/threaddump   # expect 404
+  curl -s -o /dev/null -w '%{http_code}\n' {{ .Values.publicUrl }}/user/login              # expect 200

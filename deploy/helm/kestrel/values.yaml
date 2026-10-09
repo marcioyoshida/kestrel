@@ -1,0 +1,94 @@
+# Kestrel Helm values — M0 (see docs/kestrel/adr/0001-eks-native-architecture.md).
+# M0 runs the upstream image against RDS with Quartz still inside the web pod.
+
+image:
+  repository: rundeck/rundeck
+  tag: "6.2.1"       # latest upstream GA at fork time; pin a digest in real environments
+  digest: ""         # e.g. sha256:...; wins over tag when set
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Public URL users reach through CloudFront, e.g. https://kestrel.example.com
+publicUrl: ""
+
+scheduler:
+  # quartz = upstream in-JVM scheduler (M0). kubernetes = CronJob reconciler (M1, not yet built).
+  mode: quartz
+
+web:
+  # Must stay 1 while scheduler.mode=quartz: OSS has no schedule-ownership takeover, so N replicas
+  # either double-fire or orphan schedules. The chart refuses replicas > 1 in quartz mode.
+  replicas: 1
+  # Fixed server UUID (upstream default is a hardcoded constant shared by every install).
+  serverUuid: ""     # required; generate once with `uuidgen` and keep it stable
+  resources:
+    requests: { cpu: "1", memory: 3Gi }
+    limits: { memory: 3Gi }
+  jvmMaxRamPercentage: 75
+  sessionTimeoutSeconds: 3600
+  # Upstream rundeck/rundeck images are amd64-only (checked 2026-10-09, tags up to 6.3.0-rc2).
+  # Graviton/arm64 arrives with the multi-arch Kestrel image in M1.
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []       # list of EnvVar
+  topologySpreadConstraints: []
+
+serviceAccount:
+  create: true
+  name: ""
+  # IRSA role (eks.amazonaws.com/role-arn). With EKS Pod Identity, leave empty and create a
+  # PodIdentityAssociation for this service account in the infra stack instead.
+  roleArn: ""
+
+database:
+  # JDBC to RDS (Aurora PostgreSQL recommended for M0/M1). Replaced by DynamoDB in M2.
+  url: ""            # jdbc:postgresql://host:5432/kestrel
+  driver: org.postgresql.Driver
+  # Secret with keys `username` and `password` (External Secrets / Secrets Store CSI).
+  existingSecret: ""
+
+keyStorage:
+  # Secret with key `password` used by the aes-gcm storage converters for keys/ and projects/.
+  existingSecret: ""
+
+logStorage:
+  s3:
+    enabled: false
+    bucket: ""
+    region: ""
+
+# Plugin jars fetched into libext/ by an init container. Each needs a pinned sha256.
+# The S3 log store (org.rundeck.amazon-s3, rundeck-plugins/rundeck-s3-log-plugin) is NOT in the
+# upstream image and must be listed here when logStorage.s3.enabled=true.
+plugins: []
+#  - name: rundeck-s3-log-plugin.jar
+#    url: https://github.com/rundeck-plugins/rundeck-s3-log-plugin/releases/download/<ver>/<jar>
+#    sha256: <hex>
+#    provides: org.rundeck.amazon-s3
+pluginFetcher:
+  image: curlimages/curl:8.16.0
+
+# SSO is deliberately absent in M0: Rundeck's preauth mode trusts X-Forwarded-Uuid/-Roles, which
+# CloudFront and the ALB pass through from the client (role spoofing). M1 adds an oauth2-proxy
+# sidecar with Rundeck bound to loopback — see ADR 0001 §6. M0 uses Rundeck's built-in login.
+
+service:
+  type: ClusterIP
+  port: 4440
+
+ingress:
+  # Internal ALB (AWS Load Balancer Controller) used as a CloudFront VPC Origin.
+  enabled: true
+  className: alb
+  host: ""           # optional host rule; CloudFront forwards the viewer Host or the origin host
+  certificateArn: "" # ACM cert on the ALB for HTTPS between CloudFront and the origin
+  # Restrict the ALB to CloudFront VPC-origin traffic via its managed security group.
+  securityGroups: ""
+  annotations: {}
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1

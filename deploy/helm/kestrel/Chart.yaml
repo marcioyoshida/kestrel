@@ -1,0 +1,11 @@
+apiVersion: v2
+name: kestrel
+description: Kestrel — EKS-native workload scheduler (fork of Rundeck). M0 chart, see docs/kestrel/adr/0001.
+type: application
+version: 0.1.0
+appVersion: "6.2.1"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/marcioyoshida/kestrel
+sources:
+  - https://github.com/marcioyoshida/kestrel
+  - https://github.com/rundeck/rundeck

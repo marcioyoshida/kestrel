@@ -1,0 +1,56 @@
+{{- if .Values.ingress.enabled }}
+{{- $svc := printf "%s-web" (include "kestrel.fullname" .) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kestrel.fullname" . }}-web
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+  annotations:
+    # Internal ALB, reached only through a CloudFront VPC Origin.
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /monitoring/health/readiness
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    {{- end }}
+    {{- with .Values.ingress.securityGroups }}
+    alb.ingress.kubernetes.io/security-groups: {{ . | quote }}
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    {{- end }}
+    # Upstream serves /monitoring/** with permitAll (incl. threaddump, metrics). Kubelet probes
+    # hit the pod directly; nothing outside the cluster needs these, so the ALB answers 404.
+    alb.ingress.kubernetes.io/actions.block-monitoring: >-
+      {"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"404","messageBody":"Not Found"}}
+    {{- if eq .Values.scheduler.mode "quartz" }}
+    # In-memory HTTP sessions until M1 makes them stateless.
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.type=lb_cookie,stickiness.lb_cookie.duration_seconds={{ .Values.web.sessionTimeoutSeconds }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - {{- with .Values.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /monitoring
+            pathType: Prefix
+            backend:
+              service:
+                name: block-monitoring
+                port: { name: use-annotation }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $svc }}
+                port: { name: http }
+{{- end }}

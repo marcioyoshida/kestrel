@@ -1,3 +1,12 @@
+# Kestrel fork
+
+This repo is **Kestrel**, a surgical fork of Rundeck for EKS (DynamoDB, Kubernetes CronJobs
+instead of Quartz, CloudFront, GitHub App, modernized UI). Read `docs/kestrel/README.md` and the
+ADRs in `docs/kestrel/adr/` before changing storage, scheduling, execution or the UI. Keep
+changes behind upstream interfaces (`DataProvider`, `JobScheduleManager`, `SchedulesManager`)
+where they exist, so monthly upstream rebases stay tractable. Helm chart: `deploy/helm/kestrel`
+(`helm lint` + `kubeconform -strict` before committing).
+
 # Project Conventions
 
 ## Documentation

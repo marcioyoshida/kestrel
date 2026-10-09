@@ -1,0 +1,33 @@
+# Non-secret settings, consumed by the upstream image's remco env backend
+# (env RUNDECK_A_B_C ↔ key /rundeck/a/b/c in docker/official/remco/templates).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kestrel.fullname" . }}-web-env
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+data:
+  RUNDECK_GRAILS_URL: {{ required "publicUrl is required (the CloudFront URL users reach)" .Values.publicUrl | trimSuffix "/" | quote }}
+  RUNDECK_SERVER_FORWARDED: "true"
+  RUNDECK_SERVER_UUID: {{ required "web.serverUuid is required; generate once with uuidgen" .Values.web.serverUuid | quote }}
+  RUNDECK_SERVER_SESSION_TIMEOUT: {{ .Values.web.sessionTimeoutSeconds | quote }}
+  JVM_MAX_RAM_PERCENTAGE: {{ .Values.web.jvmMaxRamPercentage | quote }}
+  RUNDECK_DATABASE_URL: {{ required "database.url is required (H2 on an emptyDir loses all data on restart)" .Values.database.url | quote }}
+  RUNDECK_DATABASE_DRIVER: {{ .Values.database.driver | quote }}
+  {{- if not .Values.database.existingSecret }}
+  {{- fail "database.existingSecret is required (keys: username, password)" }}
+  {{- end }}
+  {{- if not .Values.keyStorage.existingSecret }}
+  {{- fail "keyStorage.existingSecret is required (key: password) so keys and project config are encrypted at rest" }}
+  {{- end }}
+  RUNDECK_STORAGE_PROVIDER_1_TYPE: "db"
+  RUNDECK_STORAGE_PROVIDER_1_PATH: "keys"
+  RUNDECK_STORAGE_CONVERTER_1_TYPE: "aes-gcm-encryption"
+  RUNDECK_STORAGE_CONVERTER_1_PATH: "keys"
+  RUNDECK_CONFIG_STORAGE_CONVERTER_1_TYPE: "aes-gcm-encryption"
+  RUNDECK_CONFIG_STORAGE_CONVERTER_1_PATH: "projects"
+  {{- if .Values.logStorage.s3.enabled }}
+  RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_NAME: "org.rundeck.amazon-s3"
+  RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_BUCKET: {{ required "logStorage.s3.bucket is required" .Values.logStorage.s3.bucket | quote }}
+  RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_REGION: {{ required "logStorage.s3.region is required" .Values.logStorage.s3.region | quote }}
+  {{- end }}
