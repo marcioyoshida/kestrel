@@ -71,9 +71,21 @@ plugins: []
 pluginFetcher:
   image: curlimages/curl:8.16.0
 
-# SSO is deliberately absent in M0: Rundeck's preauth mode trusts X-Forwarded-Uuid/-Roles, which
-# CloudFront and the ALB pass through from the client (role spoofing). M1 adds an oauth2-proxy
-# sidecar with Rundeck bound to loopback — see ADR 0001 §6. M0 uses Rundeck's built-in login.
+# Sign-in (ADR 0001 §6): oauth2-proxy sidecar in front of Rundeck, which then binds to 127.0.0.1
+# so the proxy cannot be bypassed via the pod IP. The proxy strips client-supplied X-Forwarded-*
+# identity headers and sets them from the verified ID token; Rundeck preauth trusts only those.
+auth:
+  enabled: false
+  provider: cognito          # cognito | oidc (any OIDC issuer: Entra ID, Okta, Google, Keycloak…)
+  issuerUrl: ""              # cognito: https://cognito-idp.<region>.amazonaws.com/<poolId>
+  groupsClaim: ""            # default: cognito:groups for cognito, groups for oidc
+  allowedGroups: []          # optional: only these IdP groups may sign in
+  # Secret keys: client-id, client-secret, cookie-secret (32 random bytes, base64)
+  existingSecret: ""
+  image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
 
 service:
   type: ClusterIP
@@ -88,6 +100,13 @@ ingress:
   # Restrict the ALB to CloudFront VPC-origin traffic via its managed security group.
   securityGroups: ""
   annotations: {}
+
+# Attach pods to an ALB target group owned by infrastructure-as-code (infra/ in this repo) instead
+# of letting an Ingress create the ALB. Use with ingress.enabled=false. EKS Auto Mode API group.
+targetGroupBinding:
+  enabled: false
+  targetGroupArn: ""
+  apiVersion: eks.amazonaws.com/v1   # elbv2.k8s.aws/v1beta1 with the self-managed LB controller
 
 podDisruptionBudget:
   enabled: true

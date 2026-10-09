@@ -1,0 +1,6 @@
+{
+  "app": ".venv/bin/python app.py",
+  "context": {
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}
