@@ -181,9 +181,10 @@ jobs:
           ! git grep -q pd-internal.com -- '*package-lock.json'
       - name: Kestrel unit tests
         run: |
-          ./gradlew :kestrel-scheduler:test :kestrel-scheduler:shadowJar \
+          ./gradlew :kestrel-scheduler:test :kestrel-scheduler:shadowJar :kestrel-gorm-dynamodb:shadowJar \
             :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
-          kestrel-scheduler/check-shaded-jar.sh
+          kestrel-scheduler/check-shaded-jar.sh kestrel-scheduler
+          kestrel-scheduler/check-shaded-jar.sh kestrel-gorm-dynamodb
       # Docker Hub rate-limits anonymous pulls per runner IP (429 seen in CI). The base images are
       # digest-pinned, so pulling them through Google's Docker Hub mirror yields identical bytes.
       - name: Pull Docker Hub images through mirror.gcr.io
@@ -199,6 +200,13 @@ jobs:
           ./gradlew :docker:officialBuild -PdockerRepository="$REPO" \
             -PdockerTags="${GITHUB_SHA::12}" -PjreVersion=openjdk-17-jre-headless
           docker run --rm --entrypoint java "$REPO:${GITHUB_SHA::12}" -version
+      # The war, for running Kestrel locally against DynamoDB Local (java -jar rundeck.war).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kestrel-war
+          path: rundeckapp/build/libs/rundeck-*.war
+          retention-days: 3
+          compression-level: 0
       - name: AWS credentials (OIDC)
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.KESTREL_ECR_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0

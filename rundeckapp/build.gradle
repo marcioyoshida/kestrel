@@ -189,6 +189,10 @@ dependencies {
     implementation project(':core')
     // Shaded: Kestrel's AWS SDK is relocated so plugins keep their own (see kestrel-scheduler/build.gradle).
     implementation project(path: ':kestrel-scheduler', configuration: 'shaded')
+    // Kestrel M2 (ADR 0004): GORM datastore on DynamoDB (AWS SDK shaded) and the GORM simple
+    // datastore it builds on.
+    implementation project(path: ':kestrel-gorm-dynamodb', configuration: 'shaded')
+    implementation "org.apache.grails.data:grails-data-simple:${grailsVersion}"
     implementation project(':rundeck-storage:rundeck-storage-filesys')
     implementation project(':rundeck-app-util')
 

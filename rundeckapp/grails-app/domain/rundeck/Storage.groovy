@@ -26,6 +26,9 @@ import static grails.gorm.hibernate.mapping.MappingBuilder.orm
 
 
 class Storage implements RundeckStorage{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String namespace
     String dir
     String name

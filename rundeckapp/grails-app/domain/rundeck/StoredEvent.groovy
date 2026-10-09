@@ -6,6 +6,9 @@ import org.rundeck.app.data.model.v1.storedevent.EventSeverity
 
 @GrailsCompileStatic
 class StoredEvent implements Event {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String serverUUID
     EventSeverity severity = EventSeverity.INFO
     String projectName

@@ -3,6 +3,8 @@ package org.rundeck.kestrel.gorm.dynamodb
 import groovy.transform.CompileStatic
 import org.grails.datastore.mapping.config.Settings
 import org.grails.datastore.mapping.core.Session
+import org.grails.datastore.mapping.core.connections.ConnectionSourceSettings
+import org.grails.datastore.mapping.core.connections.ConnectionSources
 import org.grails.datastore.mapping.core.connections.ConnectionSourcesInitializer
 import org.grails.datastore.mapping.core.DatastoreUtils
 import org.grails.datastore.mapping.keyvalue.mapping.config.KeyValue
@@ -44,7 +46,14 @@ class DynamoDatastore extends SimpleMapDatastore {
      */
     DynamoDatastore(DynamoDbClient client, String tablePrefix, boolean createTables, Collection<String> indexed,
                     PropertyResolver config, ConfigurableApplicationEventPublisher publisher, Class... classes) {
-        super(ConnectionSourcesInitializer.create(new SimpleMapConnectionSourceFactory(), config), publisher, classes)
+        this(client, tablePrefix, createTables, indexed,
+            ConnectionSourcesInitializer.create(new SimpleMapConnectionSourceFactory(), config), publisher, classes)
+    }
+
+    private DynamoDatastore(DynamoDbClient client, String tablePrefix, boolean createTables, Collection<String> indexed,
+                            ConnectionSources<Map<String, Map>, ConnectionSourceSettings> sources,
+                            ConfigurableApplicationEventPublisher publisher, Class... classes) {
+        super(sources, mappingContext(sources, classes), publisher)
         this.client = client
         this.tables = new DynamoTables(client, tablePrefix, createTables)
         this.ids = new IdAllocator(tables, 100L)
@@ -56,6 +65,13 @@ class DynamoDatastore extends SimpleMapDatastore {
     DynamoDatastore(DynamoDbClient client, String tablePrefix, Class... classes) {
         this(client, tablePrefix, true, [], DatastoreUtils.createPropertyResolver([(Settings.SETTING_FAIL_ON_ERROR): false]),
             new DefaultApplicationEventPublisher(), classes)
+    }
+
+    private static DynamoMappingContext mappingContext(ConnectionSources<Map<String, Map>, ConnectionSourceSettings> sources,
+                                                       Class... classes) {
+        def ctx = new DynamoMappingContext('kestrel', sources.defaultConnectionSource.settings)
+        ctx.addPersistentEntities(classes)
+        ctx
     }
 
     private void markIndexed(Collection<String> indexed) {

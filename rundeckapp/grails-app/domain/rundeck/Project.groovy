@@ -23,6 +23,9 @@ import org.rundeck.app.data.model.v1.project.RdProject
  * Created by greg on 2/19/15.
  */
 class Project implements RdProject {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String name
     String description
     Date dateCreated

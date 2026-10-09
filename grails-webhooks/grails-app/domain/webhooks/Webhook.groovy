@@ -18,6 +18,9 @@ package webhooks
 import org.rundeck.app.data.model.v1.webhook.RdWebhook
 
 class Webhook implements RdWebhook{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (same rule as rundeckapp's KestrelStorage). */
+    static mapWith = 'dynamodb'.equalsIgnoreCase(System.getenv('KESTREL_STORAGE')?.trim()) ? 'dynamodb' : 'hibernate'
+
 
     String uuid
     String name

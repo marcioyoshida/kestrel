@@ -570,6 +570,9 @@ class BootStrap {
     }
 
     def ensureTypeOnAuthToken() {
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            return  // legacy RDBMS data repair; DynamoDB stores are greenfield (ADR 0004)
+        }
         Sql sql = new Sql(dataSource)
         try {
             int updatedRows = sql.executeUpdate("UPDATE auth_token SET type = 'USER' WHERE type = ''")

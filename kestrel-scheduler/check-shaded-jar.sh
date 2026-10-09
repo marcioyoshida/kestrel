@@ -3,7 +3,9 @@
 # nothing outside org/rundeck/kestrel/ (an unrelocated dependency would clash, as the S3 log
 # plugin did with "UrlConnectionSdkHttpService not a subtype").
 set -euo pipefail
-jar=$(ls "$(dirname "$0")"/build/libs/*-shaded.jar)
+# Usage: check-shaded-jar.sh [module dir]  (default: kestrel-scheduler)
+module=${1:-$(dirname "$0")}
+jar=$(ls "$module"/build/libs/*-shaded.jar)
 leaked=$(unzip -Z1 "$jar" | grep '\.class$' | grep -v '^org/rundeck/kestrel/' | cut -d/ -f1-3 | sort -u || true)
 if [ -n "$leaked" ]; then
   echo "Unrelocated classes in $jar:"; echo "$leaked"; exit 1

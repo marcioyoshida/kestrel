@@ -20,6 +20,9 @@ import org.rundeck.app.data.model.v1.user.RdUser
 import rundeck.data.validation.validators.AnyDomainEmailValidator
 
 class User implements RdUser{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     Long id  // Explicit id field required for Hibernate 5.6.15
     String login
     String password

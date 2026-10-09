@@ -193,6 +193,11 @@ import rundeckapp.init.RundeckConfigReloader
 import rundeckapp.init.RundeckExtendedMessageBundle
 import rundeckapp.init.servlet.JettyServletContainerCustomizer
 import org.rundeck.kestrel.app.GormJobCatalog
+import org.rundeck.kestrel.app.KestrelStorage
+import org.rundeck.kestrel.gorm.dynamodb.DynamoClients
+import org.rundeck.kestrel.gorm.dynamodb.DynamoDatastore
+import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
+import grails.util.GrailsClassUtils
 import org.rundeck.kestrel.app.HandoffRegistry
 import org.rundeck.kestrel.app.KestrelJobScheduleManager
 import org.rundeck.kestrel.app.KestrelSchedulerRuntime
@@ -465,6 +470,26 @@ beans={
 
     rundeckFilesystemPolicyAuthorization(AclsUtil, configDir, ref('log4jAuthorizationLogger')){ bean->
         bean.factoryMethod='createFromDirectory'
+    }
+
+    // Kestrel (ADR 0004): KESTREL_STORAGE=dynamodb maps the classes declaring
+    // mapWith = KestrelStorage.mapWith() to the DynamoDB GORM datastore.
+    if (KestrelStorage.isDynamo()) {
+        def dynamoClasses = grailsApplication.getArtefacts('Domain')*.clazz.findAll {
+            GrailsClassUtils.getStaticPropertyValue(it, 'mapWith') == 'dynamodb'
+        }
+        kestrelDynamoClient(DynamoClients, System.getenv('AWS_REGION') ?: 'us-east-1',
+            System.getenv('KESTREL_DYNAMODB_ENDPOINT') ?: null) { bean ->
+            bean.factoryMethod = 'create'
+            bean.destroyMethod = 'close'
+        }
+        kestrelDynamoDatastore(DynamoDatastore, ref('kestrelDynamoClient'),
+            System.getenv('KESTREL_DYNAMODB_PREFIX') ?: 'kestrel',
+            (System.getenv('KESTREL_DYNAMODB_CREATE_TABLES') ?: 'true') == 'true',
+            KestrelStorage.INDEXED, grailsApplication.config, new DefaultApplicationEventPublisher(),
+            dynamoClasses as Class[]) { bean ->
+            bean.destroyMethod = 'close'
+        }
     }
 
     // Kestrel (ADR 0001 §2): kestrel.scheduler.mode=kubernetes replaces Quartz cron triggers with

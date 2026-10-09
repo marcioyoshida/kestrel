@@ -20,6 +20,9 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.rundeck.app.data.model.v1.pluginMeta.RdPluginMeta
 
 class PluginMeta implements RdPluginMeta{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
 
     static constraints = {
         jsonData(nullable: true, blank: true)

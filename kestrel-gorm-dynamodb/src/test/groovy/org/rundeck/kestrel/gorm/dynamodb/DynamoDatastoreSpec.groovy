@@ -36,10 +36,10 @@ class DynamoDatastoreSpec extends Specification {
         client = DynamoDbClient.builder().endpointOverride(URI.create(endpoint())).region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('x', 'x')))
             .httpClientBuilder(UrlConnectionHttpClient.builder()).build()
-        datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project'],
+        datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token'],
             org.grails.datastore.mapping.core.DatastoreUtils.createPropertyResolver([:]),
             new org.grails.datastore.gorm.events.DefaultApplicationEventPublisher(),
-            TJob, TOption, TExec, TStep, TCmdStep, TJobStep)
+            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken)
     }
 
     def cleanupSpec() {
@@ -185,6 +185,29 @@ class DynamoDatastoreSpec extends Specification {
         done == 3
         deleted == 3
         TExec.withNewSession { TExec.countByProject('bulk') } == 0
+    }
+
+    def "classes with mapWith = 'dynamodb' are mapped; an indexed lookup inside or-branches avoids a scan"() {
+        given:
+        TToken.withNewSession {
+            new TToken(token: 'hash-1', mode: 'SECURED', creator: 'a').save(failOnError: true)
+            new TToken(token: 'legacy-2', mode: 'LEGACY', creator: 'b').save(failOnError: true)
+        }
+
+        when: 'the shape of GormTokenDataProvider.tokenLookup'
+        def found = TToken.withNewSession {
+            TToken.createCriteria().get {
+                or {
+                    and { eq('mode', 'SECURED'); eq('token', 'hash-1') }
+                    and { eq('mode', 'LEGACY'); eq('token', 'xx') }
+                }
+            }
+        }
+
+        then:
+        found.creator == 'a'
+        DynamoQuery.LAST_PLAN.get() == 'index:token'
+        datastore.mappingContext.getPersistentEntity(TToken.name) != null
     }
 
     def "unsupported criteria fail loudly instead of returning wrong rows"() {

@@ -61,3 +61,12 @@ class TJobStep extends TStep {
 }
 
 enum TStatus { ACTIVE, DISABLED }
+
+/** Like Rundeck's AuthToken: opted in with mapWith, looked up by token inside an or-block. */
+@Entity
+class TToken {
+    static mapWith = 'dynamodb'
+    String token
+    String mode
+    String creator
+}

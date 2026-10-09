@@ -56,42 +56,75 @@ class DynamoQuery extends Query {
     // ---------------------------------------------------------------- planning
 
     private List<Map> candidates(PersistentEntity entity, Query.Junction criteria) {
-        if (criteria instanceof Query.Conjunction) {
-            String idName = entity.identity.name
-            for (Query.Criterion c : criteria.criteria) {
-                if (c instanceof Query.IdEquals) {
-                    plan = 'id'
-                    return persister.retrieveEntries([((Query.IdEquals) c).value])
-                }
-                if (c instanceof Query.Equals && ((Query.Equals) c).property == idName && ((Query.Equals) c).value != null) {
-                    plan = 'id'
-                    return persister.retrieveEntries([idOf(((Query.Equals) c).value)])
-                }
-                if (c instanceof Query.In && ((Query.In) c).property == idName && ((Query.In) c).values != null) {
-                    plan = 'id'
-                    return persister.retrieveEntries(((Query.In) c).values.collect { idOf(it) })
-                }
-            }
-            for (Query.Criterion c : criteria.criteria) {
-                if (c instanceof Query.Equals && ((Query.Equals) c).value != null) {
-                    def p = indexedProperty(entity, ((Query.Equals) c).property)
-                    if (p) {
-                        plan = "index:${p.name}"
-                        return persister.retrieveEntries(persister.getPropertyIndexer(p).query(indexValue(p, ((Query.Equals) c).value)))
-                    }
-                }
-                if (c instanceof Query.In && ((Query.In) c).values && ((Query.In) c).values.size() <= MAX_INDEXED_IN) {
-                    def p = indexedProperty(entity, ((Query.In) c).property)
-                    if (p) {
-                        plan = "index:${p.name}"
-                        def indexer = persister.getPropertyIndexer(p)
-                        return persister.retrieveEntries(((Query.In) c).values.collectMany { indexer.query(indexValue(p, it)) }.unique())
-                    }
-                }
-            }
+        List<String> how = []
+        Collection ids = planIds(entity, criteria, how)
+        if (ids != null) {
+            plan = how.unique().join('+')
+            return persister.retrieveEntries(ids.unique())
         }
         plan = 'scan'
         persister.scanAll()
+    }
+
+    /**
+     * Candidate ids for a criterion, or null when it cannot be answered from keys or indexes.
+     * A conjunction needs one plannable member (the rest is checked in memory); a disjunction
+     * needs every branch plannable (union of the branches).
+     */
+    private Collection planIds(PersistentEntity entity, Query.Criterion c, List<String> how) {
+        String idName = entity.identity.name
+        switch (c) {
+            case Query.Conjunction:
+                def members = ((Query.Junction) c).criteria
+                // ids first, then indexed equality, then nested junctions
+                for (Query.Criterion m : members.findAll { isIdCriterion(idName, it) } + members.findAll { !isIdCriterion(idName, it) }) {
+                    def ids = planIds(entity, m, how)
+                    if (ids != null) return ids
+                }
+                return null
+            case Query.Disjunction:
+                def members = ((Query.Junction) c).criteria
+                if (members.isEmpty()) return null
+                Set out = new LinkedHashSet()
+                for (Query.Criterion m : members) {
+                    def ids = planIds(entity, m, how)
+                    if (ids == null) return null
+                    out.addAll(ids)
+                }
+                return out
+            case Query.IdEquals:
+                how << 'id'
+                return [idOf(((Query.IdEquals) c).value)]
+            case Query.Equals:
+                def eq = (Query.Equals) c
+                if (eq.value == null) return null
+                if (eq.property == idName) {
+                    how << 'id'
+                    return [idOf(eq.value)]
+                }
+                def p = indexedProperty(entity, eq.property)
+                if (p == null) return null
+                how << "index:${p.name}".toString()
+                return persister.getPropertyIndexer(p).query(indexValue(p, eq.value))
+            case Query.In:
+                def in = (Query.In) c
+                if (in.subquery != null || in.values == null) return null
+                if (in.property == idName) {
+                    how << 'id'
+                    return in.values.collect { idOf(it) }
+                }
+                def p = indexedProperty(entity, in.property)
+                if (p == null || in.values.size() > MAX_INDEXED_IN) return null
+                how << "index:${p.name}".toString()
+                def indexer = persister.getPropertyIndexer(p)
+                return in.values.collectMany { indexer.query(indexValue(p, it)) }
+            default:
+                return null
+        }
+    }
+
+    private static boolean isIdCriterion(String idName, Query.Criterion c) {
+        c instanceof Query.IdEquals || (c instanceof Query.PropertyCriterion && ((Query.PropertyCriterion) c).property == idName)
     }
 
     private PersistentProperty indexedProperty(PersistentEntity entity, String name) {

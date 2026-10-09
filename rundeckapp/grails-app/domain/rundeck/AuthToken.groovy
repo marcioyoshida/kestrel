@@ -24,6 +24,9 @@ import org.rundeck.app.data.model.v1.authtoken.AuthenticationToken
 import java.time.Clock
 
 class AuthToken implements AuthenticationToken {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb. */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String token
     String authRoles
     String uuid
