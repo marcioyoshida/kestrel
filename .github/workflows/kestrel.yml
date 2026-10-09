@@ -149,6 +149,13 @@ jobs:
           ./gradlew :kestrel-scheduler:test :kestrel-scheduler:shadowJar \
             :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
           kestrel-scheduler/check-shaded-jar.sh
+      # Docker Hub rate-limits anonymous pulls per runner IP (429 seen in CI). The base images are
+      # digest-pinned, so pulling them through Google's Docker Hub mirror yields identical bytes.
+      - name: Pull Docker Hub images through mirror.gcr.io
+        run: |
+          echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       - name: Build war and image
         env:
           REPO: ${{ vars.KESTREL_ECR_REPOSITORY || 'kestrel' }}
