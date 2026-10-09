@@ -144,6 +144,7 @@ def main():
         v.sh("aws", "cognito-idp", "admin-delete-user", "--user-pool-id", pool, "--username", email, check=False)
 
     # ------------------------------------------------------------------ setup
+    check_cross_pod_freshness(token)
     api_call(token, base, f"/api/{API}/project/{PROJECT}", "DELETE")
     s, text = api_call(token, base, f"/api/{API}/projects", "POST",
                        json.dumps({"name": PROJECT, "config": {"resources.source.1.type": "local"}}))
@@ -250,6 +251,27 @@ def main():
     v.check("soak: no pod registered a Quartz cron trigger", not bad, f"offending pods: {bad}")
     print(f"\nFirings accounted: {total_ok}/{total_expected}; kills: {kills}")
     api_call(token, base, f"/api/{API}/project/{PROJECT}", "DELETE")
+
+
+def pod_api(pod, token, method, path, body="", ctype="application/json"):
+    """Calls one pod's loopback Rundeck directly (bypassing the ALB), returns the HTTP status."""
+    p = subprocess.run(K + ["exec", "-i", pod, "-c", "rundeck", "--", "curl", "-s", "-o", "/dev/null",
+                            "-w", "%{http_code}", "-X", method, "-H", f"X-Rundeck-Auth-Token: {token}",
+                            "-H", "Accept: application/json", "-H", f"Content-Type: {ctype}",
+                            "--data-binary", "@-", f"http://127.0.0.1:4440{path}"],
+                       input=body, capture_output=True, text=True, env=v.ENV)
+    return p.stdout.strip()
+
+
+def check_cross_pod_freshness(token):
+    """A write on one web pod is visible at once on another that had already looked it up."""
+    name = f"fresh-{secrets.token_hex(3)}"
+    miss = pod_api("kestrel-web-0", token, "GET", f"/api/{API}/project/{name}")
+    made = pod_api("kestrel-web-1", token, "POST", f"/api/{API}/projects", json.dumps({"name": name}))
+    seen = pod_api("kestrel-web-0", token, "GET", f"/api/{API}/project/{name}")
+    pod_api("kestrel-web-1", token, "DELETE", f"/api/{API}/project/{name}")
+    v.check("replicas: project created on web-1 is visible at once on web-0 (after a cached miss)",
+            (miss, made, seen) == ("404", "201", "200"), f"web-0 before {miss}, create {made}, web-0 after {seen}")
 
 
 def check_cross_pod_abort(token, base):
