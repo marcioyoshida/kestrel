@@ -12,15 +12,25 @@ imagePullSecrets: []
 publicUrl: ""
 
 scheduler:
-  # quartz = upstream in-JVM scheduler (M0). kubernetes = CronJob reconciler (M1, not yet built).
+  # quartz = upstream in-JVM scheduler, one web replica (M0).
+  # kubernetes = no Quartz cron: a leader web pod converges one CronJob per distinct schedule;
+  # each firing goes to an SQS FIFO queue and a runner pod executes it, exactly once per job and
+  # minute (DynamoDB fire ledger). Web scales to N. See docs/kestrel/adr/0001.
   mode: quartz
+  queueUrl: ""          # SQS FIFO fire queue (KestrelRef output FireQueueUrl)
+  ledgerTable: ""       # DynamoDB fire ledger (KestrelRef output FireLedgerTable)
+  region: ""
+  trigger:
+    image: ""           # kestrel-trigger image (repository:tag), built by CI
+    arch: ""            # optional node arch for trigger pods; the image is multi-arch
 
 web:
   # Must stay 1 while scheduler.mode=quartz: OSS has no schedule-ownership takeover, so N replicas
   # either double-fire or orphan schedules. The chart refuses replicas > 1 in quartz mode.
   replicas: 1
-  # Fixed server UUID (upstream default is a hardcoded constant shared by every install).
-  serverUuid: ""     # required; generate once with `uuidgen` and keep it stable
+  # quartz mode only: fixed server UUID (upstream default is a constant shared by every install).
+  # kubernetes mode derives one per pod from its StatefulSet name.
+  serverUuid: ""
   resources:
     requests: { cpu: "1", memory: 3Gi }
     limits: { memory: 3Gi }
@@ -35,6 +45,13 @@ web:
   podAnnotations: {}
   extraEnv: []       # list of EnvVar
   topologySpreadConstraints: []
+
+# kubernetes mode: pods that execute scheduled jobs. Same image and settings as web.
+runner:
+  replicas: 1
+  resources:
+    requests: { cpu: "1", memory: 3Gi }
+    limits: { memory: 3Gi }
 
 serviceAccount:
   create: true

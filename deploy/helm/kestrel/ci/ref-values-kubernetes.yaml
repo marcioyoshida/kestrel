@@ -1,0 +1,13 @@
+# Overlay on ref-values.yaml: M1 kubernetes scheduler with 2 web replicas and 1 runner.
+scheduler:
+  mode: kubernetes
+  queueUrl: https://sqs.us-east-1.amazonaws.com/668449743071/KestrelRef-Fires.fifo
+  ledgerTable: KestrelRef-FireLedger
+  region: us-east-1
+  trigger:
+    image: 668449743071.dkr.ecr.us-east-1.amazonaws.com/kestrel-trigger:0000000
+web:
+  replicas: 2
+  serverUuid: ""
+runner:
+  replicas: 1

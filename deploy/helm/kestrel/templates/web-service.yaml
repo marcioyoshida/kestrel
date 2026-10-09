@@ -12,3 +12,15 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+---
+# Governing (headless) service of the web StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kestrel.fullname" . }}-web-pods
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "kestrel.web.selectorLabels" . | nindent 4 }}

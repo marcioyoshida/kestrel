@@ -7,6 +7,8 @@
 # Env: IMAGE_TAG (default: this commit, as pushed by .github/workflows/kestrel.yml),
 #      IMAGE_REPOSITORY (default: the KestrelCi ECR repo; rundeck/rundeck for upstream),
 #      EPHEMERAL=true|false (default true: `teardown.sh` leaves nothing behind),
+#      SCHEDULER_MODE=kubernetes|quartz (default kubernetes: CronJobs + SQS + runners, M1),
+#      WEB_REPLICAS (default 2 in kubernetes mode), RUNNER_REPLICAS (default 1),
 #      SKIP_CDK=1 to reuse already-deployed stacks.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -26,8 +28,22 @@ DB_SECRET=$(out KestrelRef DbSecretArn)
 ISSUER=$(out KestrelRef OidcIssuer)
 POOL_ID=$(out KestrelRef UserPoolId)
 CLIENT_ID=$(out KestrelRef ClientId)
+FIRE_QUEUE=$(out KestrelRef FireQueueUrl)
+LEDGER=$(out KestrelRef FireLedgerTable)
 IMAGE_REPOSITORY=${IMAGE_REPOSITORY:-$(out KestrelCi RepositoryUri)}
 IMAGE_TAG=${IMAGE_TAG:-$(git -C "$ROOT" rev-parse HEAD | cut -c1-12)}
+TRIGGER_IMAGE=${TRIGGER_IMAGE:-$(out KestrelCi TriggerRepositoryUri):$IMAGE_TAG}
+SCHEDULER_MODE=${SCHEDULER_MODE:-kubernetes}
+if [ "$SCHEDULER_MODE" = kubernetes ]; then
+  WEB_REPLICAS=${WEB_REPLICAS:-2}
+  RUNNER_REPLICAS=${RUNNER_REPLICAS:-1}
+  repo=${TRIGGER_IMAGE%:*}; tag=${TRIGGER_IMAGE##*:}
+  aws ecr describe-images --repository-name "${repo#*/}" --image-ids "imageTag=$tag" >/dev/null 2>&1 \
+    || die "trigger image $TRIGGER_IMAGE not found; wait for the Kestrel CI run of this commit"
+else
+  WEB_REPLICAS=1
+  RUNNER_REPLICAS=0
+fi
 
 if [[ $IMAGE_REPOSITORY == *.dkr.ecr.* ]]; then
   aws ecr describe-images --repository-name "${IMAGE_REPOSITORY#*/}" \
@@ -68,7 +84,14 @@ uuid=$(helm --kube-context "$KCTX" -n "$NS" get values "$RELEASE" -o json 2>/dev
 cat > "$tmp/values.yaml" <<VALUES
 publicUrl: $PUBLIC_URL
 image: { repository: $IMAGE_REPOSITORY, tag: "$IMAGE_TAG" }
-web: { serverUuid: $uuid }
+web: { serverUuid: "$( [ "$SCHEDULER_MODE" = quartz ] && echo "$uuid" )", replicas: $WEB_REPLICAS }
+runner: { replicas: $RUNNER_REPLICAS }
+scheduler:
+  mode: $SCHEDULER_MODE
+  queueUrl: $FIRE_QUEUE
+  ledgerTable: $LEDGER
+  region: $AWS_REGION
+  trigger: { image: $TRIGGER_IMAGE }
 database:
   url: jdbc:postgresql://$DB_HOST:5432/kestrel
   existingSecret: kestrel-db
@@ -92,12 +115,12 @@ log "helm upgrade --install ($IMAGE_REPOSITORY:$IMAGE_TAG)"
 helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$ROOT/deploy/helm/kestrel" -n "$NS" \
   -f "$tmp/values.yaml" --wait --timeout 20m
 
-log "target health"
+log "target health ($WEB_REPLICAS web replica(s))"
 for _ in $(seq 1 40); do
   state=$(aws elbv2 describe-target-health --target-group-arn "$TG_ARN" \
-    --query 'TargetHealthDescriptions[].TargetHealth.State' --output text)
-  [ "$state" = healthy ] && break
+    --query 'TargetHealthDescriptions[].TargetHealth.State' --output text | tr '\t' '\n' | sort | uniq -c | xargs)
+  [ "$state" = "$WEB_REPLICAS healthy" ] && break
   sleep 15
 done
-[ "$state" = healthy ] || die "target group not healthy: ${state:-no targets}"
+[ "$state" = "$WEB_REPLICAS healthy" ] || die "target group not healthy: ${state:-no targets}"
 echo "Kestrel is up: $PUBLIC_URL"

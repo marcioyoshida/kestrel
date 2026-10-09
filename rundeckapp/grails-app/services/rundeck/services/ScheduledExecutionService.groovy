@@ -16,6 +16,10 @@
 
 package rundeck.services
 
+import org.rundeck.kestrel.app.KestrelSettings
+import org.rundeck.kestrel.scheduler.ScheduleBucket
+import org.rundeck.kestrel.scheduler.UnsupportedScheduleException
+
 import com.dtolabs.rundeck.app.api.jobs.browse.ItemMeta
 import com.dtolabs.rundeck.core.config.Features
 import com.dtolabs.rundeck.core.jobs.JobReferenceItem
@@ -244,6 +248,8 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
     AuthorizedServicesProvider rundeckAuthorizedServicesProvider
     def OrchestratorPluginService orchestratorPluginService
     ConfigurationService configurationService
+    /** Kestrel scheduler settings; kubernetes mode rejects schedules CronJobs cannot express. */
+    KestrelSettings kestrelSettings
     UserDataProvider userDataProvider
     JobDataProvider jobDataProvider
     UserService userService
@@ -1665,6 +1671,11 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
     }
 
     Date scheduleCleanerExecutionsJob(String projectName, String cronExpression, Map config) {
+        if (kestrelSettings?.kubernetesMode) {
+            // No Quartz cron triggers in kubernetes mode; execution retention moves to DynamoDB TTL (M2).
+            log.warn("Execution history cleaner for project ${projectName} is not scheduled: kestrel.scheduler.mode=kubernetes")
+            return null
+        }
         Date nextTime
         def trigger = localCreateTrigger(projectName, CLEANER_EXECUTIONS_JOB_GROUP_NAME, cronExpression, 1)
         JobDetail jobDetail = createCleanerExecutionJobDetail(projectName, CLEANER_EXECUTIONS_JOB_GROUP_NAME, config)
@@ -3189,6 +3200,18 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
                     scheduledExecution.errors.rejectValue(
                             'crontabString',
                             'scheduledExecution.crontabString.noschedule.message', [genCron] as Object[], "invalid: {0}"
+                    )
+                }
+            }
+            if (!failed && kestrelSettings?.kubernetesMode) {
+                try {
+                    ScheduleBucket.of(genCron, scheduledExecution.timeZone, TimeZone.getDefault().toZoneId())
+                } catch (UnsupportedScheduleException e) {
+                    failed = true
+                    scheduledExecution.errors.rejectValue(
+                            'crontabString',
+                            'scheduledExecution.crontabString.invalid.message',
+                            [genCron + ' (' + e.reason + ')'] as Object[], "invalid: {0}"
                     )
                 }
             }

@@ -192,6 +192,13 @@ import rundeckapp.init.InfrastructureRoleBeanDefinitionRegistryPostProcessor
 import rundeckapp.init.RundeckConfigReloader
 import rundeckapp.init.RundeckExtendedMessageBundle
 import rundeckapp.init.servlet.JettyServletContainerCustomizer
+import org.rundeck.kestrel.app.GormJobCatalog
+import org.rundeck.kestrel.app.HandoffRegistry
+import org.rundeck.kestrel.app.KestrelJobScheduleManager
+import org.rundeck.kestrel.app.KestrelSchedulerRuntime
+import org.rundeck.kestrel.app.KestrelSettings
+import org.rundeck.kestrel.app.KubernetesJobSchedulesManager
+import org.rundeck.kestrel.app.QuartzLauncher
 import rundeckapp.init.servlet.JettyServletHstsCustomizer
 
 import javax.security.auth.login.Configuration
@@ -460,14 +467,54 @@ beans={
         bean.factoryMethod='createFromDirectory'
     }
 
-    rundeckJobScheduleManager(QuartzJobScheduleManagerService){
-        quartzScheduler=ref('quartzScheduler')
+    // Kestrel (ADR 0001 §2): kestrel.scheduler.mode=kubernetes replaces Quartz cron triggers with
+    // Kubernetes CronJobs -> SQS -> runner pods. quartz (default) keeps upstream behaviour.
+    def kestrel = KestrelSettings.from(grailsApplication.config)
+    kestrelSettings(KestrelSettings, grailsApplication.config) { bean ->
+        bean.factoryMethod = 'from'
     }
+    if (kestrel.kubernetesMode) {
+        kestrelHandoffRegistry(HandoffRegistry)
+        rundeckJobScheduleManager(KestrelJobScheduleManager) {
+            quartzScheduler = ref('quartzScheduler')
+            kestrelHandoffRegistry = ref('kestrelHandoffRegistry')
+        }
+        rundeckJobSchedulesManager(KubernetesJobSchedulesManager) {
+            scheduledExecutionService = ref('scheduledExecutionService')
+            frameworkService = ref('frameworkService')
+            quartzScheduler = ref('quartzScheduler')
+            kestrelSchedulerRuntime = ref('kestrelSchedulerRuntime')
+        }
+        kestrelJobCatalog(GormJobCatalog) {
+            scheduledExecutionService = ref('scheduledExecutionService')
+            executionService = ref('executionService')
+            frameworkService = ref('frameworkService')
+        }
+        kestrelLauncher(QuartzLauncher) {
+            quartzScheduler = ref('quartzScheduler')
+            scheduledExecutionService = ref('scheduledExecutionService')
+            rundeckJobScheduleManager = ref('rundeckJobScheduleManager')
+            kestrelHandoffRegistry = ref('kestrelHandoffRegistry')
+        }
+        kestrelSchedulerRuntime(KestrelSchedulerRuntime) {
+            kestrelSettings = ref('kestrelSettings')
+            kestrelJobCatalog = ref('kestrelJobCatalog')
+            kestrelLauncher = ref('kestrelLauncher')
+            kestrelHandoffRegistry = ref('kestrelHandoffRegistry')
+            frameworkService = ref('frameworkService')
+            scheduledExecutionService = ref('scheduledExecutionService')
+            quartzScheduler = ref('quartzScheduler')
+        }
+    } else {
+        rundeckJobScheduleManager(QuartzJobScheduleManagerService){
+            quartzScheduler=ref('quartzScheduler')
+        }
 
-    rundeckJobSchedulesManager(LocalJobSchedulesManager){
-        scheduledExecutionService = ref('scheduledExecutionService')
-        frameworkService = ref('frameworkService')
-        quartzScheduler = ref('quartzScheduler')
+        rundeckJobSchedulesManager(LocalJobSchedulesManager){
+            scheduledExecutionService = ref('scheduledExecutionService')
+            frameworkService = ref('frameworkService')
+            quartzScheduler = ref('quartzScheduler')
+        }
     }
 
     nodeSourceLoaderService(NodeSourceLoaderService){

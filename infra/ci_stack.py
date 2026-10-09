@@ -28,6 +28,18 @@ class KestrelCiStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
+        trigger_repo = ecr.Repository(
+            self, "TriggerImages",
+            repository_name="kestrel-trigger",
+            image_scan_on_push=True,
+            lifecycle_rules=[
+                ecr.LifecycleRule(description="untagged", tag_status=ecr.TagStatus.UNTAGGED,
+                                  max_image_age=Duration.days(7)),
+                ecr.LifecycleRule(description="keep 20", tag_status=ecr.TagStatus.ANY, max_image_count=20),
+            ],
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         provider = iam.OidcProviderNative(
             self, "GitHubOidc",
             url="https://token.actions.githubusercontent.com",
@@ -45,6 +57,8 @@ class KestrelCiStack(Stack):
             }),
         )
         repo.grant_push(role)
+        trigger_repo.grant_push(role)
 
         CfnOutput(self, "RepositoryUri", value=repo.repository_uri)
+        CfnOutput(self, "TriggerRepositoryUri", value=trigger_repo.repository_uri)
         CfnOutput(self, "PushRoleArn", value=role.role_arn)

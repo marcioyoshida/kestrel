@@ -1,0 +1,21 @@
+{{- include "kestrel.validate" . -}}
+# StatefulSet for stable pod names: in kubernetes mode each pod's server UUID derives from its name.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kestrel.fullname" . }}-web
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+    {{- include "kestrel.web.selectorLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kestrel.fullname" . }}-web-pods
+  replicas: {{ .Values.web.replicas }}
+  # Quartz mode runs one replica, so a rolling update is stop-then-start: never two schedulers.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "kestrel.web.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "kestrel.rundeck.pod" (dict "root" . "role" "web") | nindent 4 }}

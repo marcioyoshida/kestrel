@@ -1,0 +1,33 @@
+{{- if eq .Values.scheduler.mode "kubernetes" }}
+# Runners consume the SQS fire queue and execute scheduled jobs (ADR 0001 §3, pool mode).
+# Same image as web; Rundeck listens on loopback only and receives no user traffic.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kestrel.fullname" . }}-runner
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+    {{- include "kestrel.runner.selectorLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kestrel.fullname" . }}-runner
+  replicas: {{ .Values.runner.replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "kestrel.runner.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "kestrel.rundeck.pod" (dict "root" . "role" "runner") | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kestrel.fullname" . }}-runner
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "kestrel.runner.selectorLabels" . | nindent 4 }}
+{{- end }}

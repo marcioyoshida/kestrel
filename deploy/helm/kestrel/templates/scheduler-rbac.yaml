@@ -1,0 +1,47 @@
+{{- if eq .Values.scheduler.mode "kubernetes" }}
+# Web pods elect a leader on a Lease; the leader converges the trigger CronJobs. Runner and
+# trigger pods need no Kubernetes API access at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kestrel.fullname" . }}-scheduler
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kestrel.fullname" . }}-scheduler
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kestrel.fullname" . }}-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kestrel.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kestrel.runnerServiceAccountName" . }}
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kestrel.triggerServiceAccountName" . }}
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}

@@ -16,12 +16,14 @@ from aws_cdk import (
     aws_cloudfront as cf,
     aws_cloudfront_origins as origins,
     aws_cognito as cognito,
+    aws_dynamodb as dynamodb,
     aws_ec2 as ec2,
     aws_eks as eks,
     aws_elasticloadbalancingv2 as elbv2,
     aws_iam as iam,
     aws_rds as rds,
     aws_s3 as s3,
+    aws_sqs as sqs,
 )
 from constructs import Construct
 
@@ -29,6 +31,8 @@ CLUSTER_NAME = "kestrel-ref"
 K8S_VERSION = "1.36"
 NAMESPACE = "kestrel"
 SERVICE_ACCOUNT = "kestrel"
+RUNNER_SERVICE_ACCOUNT = "kestrel-runner"
+TRIGGER_SERVICE_ACCOUNT = "kestrel-trigger"
 PROXY_PORT = 4180  # oauth2-proxy sidecar; Rundeck itself listens on 127.0.0.1:4440 only
 # CloudFront VPC origins are unsupported in use1-az3, which is us-east-1e in this account.
 AZS = ["us-east-1a", "us-east-1b"]
@@ -147,6 +151,48 @@ class KestrelStack(Stack):
             self, "WebPodIdentity",
             cluster_name=cluster.ref, namespace=NAMESPACE, service_account=SERVICE_ACCOUNT,
             role_arn=web_role.role_arn,
+        )
+
+        # ---------------------------------------------------------------- scheduler (M1, ADR 0001 §2)
+        # CronJob trigger pods -> FIFO fire queue -> runner pods. FIFO deduplicates a retried
+        # trigger (bucket+minute); the ledger makes each job@minute run once across runners.
+        fires_dlq = sqs.Queue(
+            self, "FiresDlq", fifo=True, retention_period=Duration.days(14),
+            encryption=sqs.QueueEncryption.SQS_MANAGED, enforce_ssl=True)
+        fires = sqs.Queue(
+            self, "Fires", fifo=True,
+            visibility_timeout=Duration.seconds(120),  # > runner hand-off timeout (60 s)
+            retention_period=Duration.days(1),
+            encryption=sqs.QueueEncryption.SQS_MANAGED, enforce_ssl=True,
+            dead_letter_queue=sqs.DeadLetterQueue(queue=fires_dlq, max_receive_count=10))
+        ledger = dynamodb.TableV2(
+            self, "FireLedger",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            billing=dynamodb.Billing.on_demand(),
+            time_to_live_attribute="expiresAt",
+            removal_policy=keep,
+        )
+
+        runner_role = iam.Role(self, "RunnerPodRole", assumed_by=iam.ServicePrincipal("pods.eks.amazonaws.com"))
+        runner_role.assume_role_policy.add_statements(iam.PolicyStatement(
+            actions=["sts:TagSession"], principals=[iam.ServicePrincipal("pods.eks.amazonaws.com")]))
+        fires.grant_consume_messages(runner_role)
+        ledger.grant(runner_role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem")
+        log_bucket.grant_read_write(runner_role)
+        log_bucket.grant_delete(runner_role)
+        eks.CfnPodIdentityAssociation(
+            self, "RunnerPodIdentity",
+            cluster_name=cluster.ref, namespace=NAMESPACE, service_account=RUNNER_SERVICE_ACCOUNT,
+            role_arn=runner_role.role_arn,
+        )
+        trigger_role = iam.Role(self, "TriggerPodRole", assumed_by=iam.ServicePrincipal("pods.eks.amazonaws.com"))
+        trigger_role.assume_role_policy.add_statements(iam.PolicyStatement(
+            actions=["sts:TagSession"], principals=[iam.ServicePrincipal("pods.eks.amazonaws.com")]))
+        fires.grant_send_messages(trigger_role)
+        eks.CfnPodIdentityAssociation(
+            self, "TriggerPodIdentity",
+            cluster_name=cluster.ref, namespace=NAMESPACE, service_account=TRIGGER_SERVICE_ACCOUNT,
+            role_arn=trigger_role.role_arn,
         )
 
         # ---------------------------------------------------------------- database (M0–M1 only)
@@ -278,6 +324,9 @@ class KestrelStack(Stack):
             "DistributionId": dist.distribution_id,
             "TargetGroupArn": tg.target_group_arn,
             "LogBucket": log_bucket.bucket_name,
+            "FireQueueUrl": fires.queue_url,
+            "FireDlqUrl": fires_dlq.queue_url,
+            "FireLedgerTable": ledger.table_name,
             "DbEndpoint": db.db_instance_endpoint_address,
             "DbSecretArn": db.secret.secret_arn,
             "OidcIssuer": f"https://cognito-idp.{self.region}.amazonaws.com/{pool.user_pool_id}",

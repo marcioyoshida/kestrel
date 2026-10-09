@@ -9,7 +9,21 @@ metadata:
 data:
   RUNDECK_GRAILS_URL: {{ required "publicUrl is required (the CloudFront URL users reach)" .Values.publicUrl | trimSuffix "/" | quote }}
   RUNDECK_SERVER_FORWARDED: "true"
+  {{- if eq .Values.scheduler.mode "quartz" }}
   RUNDECK_SERVER_UUID: {{ required "web.serverUuid is required; generate once with uuidgen" .Values.web.serverUuid | quote }}
+  {{- else }}
+  # kubernetes mode: every pod derives its own server UUID from its StatefulSet name (see the pod command).
+  RUNDECK_CLUSTERMODE_ENABLED: "true"
+  KESTREL_SCHEDULER_MODE: kubernetes
+  KESTREL_QUEUE_URL: {{ .Values.scheduler.queueUrl | quote }}
+  KESTREL_LEDGER_TABLE: {{ .Values.scheduler.ledgerTable | quote }}
+  KESTREL_REGION: {{ required "scheduler.region is required" .Values.scheduler.region | quote }}
+  KESTREL_TRIGGER_IMAGE: {{ .Values.scheduler.trigger.image | quote }}
+  KESTREL_TRIGGER_SERVICE_ACCOUNT: {{ include "kestrel.triggerServiceAccountName" . | quote }}
+  {{- with .Values.scheduler.trigger.arch }}
+  KESTREL_TRIGGER_ARCH: {{ . | quote }}
+  {{- end }}
+  {{- end }}
   RUNDECK_SERVER_SESSION_TIMEOUT: {{ .Values.web.sessionTimeoutSeconds | quote }}
   JVM_MAX_RAM_PERCENTAGE: {{ .Values.web.jvmMaxRamPercentage | quote }}
   RUNDECK_DATABASE_URL: {{ required "database.url is required (H2 on an emptyDir loses all data on restart)" .Values.database.url | quote }}
@@ -32,8 +46,7 @@ data:
   RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_REGION: {{ required "logStorage.s3.region is required" .Values.logStorage.s3.region | quote }}
   {{- end }}
   {{- if .Values.auth.enabled }}
-  # Only the oauth2-proxy sidecar can reach Rundeck, so its identity headers can be trusted.
-  RUNDECK_SERVER_ADDRESS: "127.0.0.1"
+  # Only the oauth2-proxy sidecar can reach Rundeck (bound to 127.0.0.1), so its identity headers can be trusted.
   RUNDECK_PREAUTH_ENABLED: "true"
   RUNDECK_PREAUTH_USERNAME_HEADER: "X-Forwarded-Email"
   RUNDECK_PREAUTH_ROLES_HEADER: "X-Forwarded-Groups"

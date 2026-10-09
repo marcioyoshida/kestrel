@@ -187,6 +187,7 @@ dependencies {
 
     // Rundeck project dependencies.
     implementation project(':core')
+    implementation project(':kestrel-scheduler')
     implementation project(':rundeck-storage:rundeck-storage-filesys')
     implementation project(':rundeck-app-util')
 

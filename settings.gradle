@@ -61,7 +61,8 @@ include	'rundeck-storage',
     'functional-test',
     'grails-job-kill-handler',
     'plugins:jsch-plugin',
-    'rundeck-data-models'
+    'rundeck-data-models',
+    'kestrel-scheduler'
 
 def projectFeatureEnabled = { String feature, Boolean defaultVal ->
     try {

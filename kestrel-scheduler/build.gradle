@@ -1,0 +1,37 @@
+/**
+ * Kestrel scheduler (ADR 0001 §2): Quartz-cron translation, schedule buckets, the Kubernetes
+ * CronJob reconciler with Lease leader election, and the SQS fire queue + DynamoDB fire ledger
+ * used by runner pods. Plain Java so it tests without Grails; wired into rundeckapp by
+ * rundeck.services.kestrel.*.
+ */
+apply from: "../gradle/java-version.gradle"
+apply plugin: 'groovy'
+apply plugin: 'java-library'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    api "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
+    api platform("software.amazon.awssdk:bom:${awsSdkV2Version}")
+    api("software.amazon.awssdk:sqs") {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache-client'
+    }
+    api("software.amazon.awssdk:dynamodb") {
+        exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache-client'
+    }
+    implementation "software.amazon.awssdk:url-connection-client"
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    testImplementation "org.spockframework:spock-core:${spockVersion}"
+    testImplementation "org.apache.groovy:groovy-all:${groovyVersion}"
+    testImplementation "org.quartz-scheduler:quartz:${quartzVersion}"  // oracle for exact-translation tests
+}
+
+test {
+    useJUnitPlatform()
+}
