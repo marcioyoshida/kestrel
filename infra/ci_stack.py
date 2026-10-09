@@ -5,7 +5,9 @@ reference environment can be destroyed after each validation without losing imag
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags, aws_ecr as ecr, aws_iam as iam
 from constructs import Construct
 
-GITHUB_REPO = "marcioyoshida/kestrel"
+# GitHub issues immutable OIDC subjects (owner@id/repo@id), so a renamed or re-created repo with
+# the same name can never assume this role. This repo itself was renamed from an old fork.
+GITHUB_SUBJECT = "repo:marcioyoshida@18469770/kestrel@193158319"
 
 
 class KestrelCiStack(Stack):
@@ -38,7 +40,7 @@ class KestrelCiStack(Stack):
             assumed_by=iam.WebIdentityPrincipal(provider.oidc_provider_arn, conditions={
                 "StringEquals": {
                     "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                    "token.actions.githubusercontent.com:sub": f"repo:{GITHUB_REPO}:ref:refs/heads/main",
+                    "token.actions.githubusercontent.com:sub": f"{GITHUB_SUBJECT}:ref:refs/heads/main",
                 },
             }),
         )
