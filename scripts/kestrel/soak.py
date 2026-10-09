@@ -31,7 +31,8 @@ sys.path.insert(0, __import__("os").path.dirname(__file__))
 import validate as v  # noqa: E402  (shared helpers: sign-in, HTTP, AWS CLI)
 
 API = v.API
-PROJECT = "kestrel-soak"
+# Unique per run: Rundeck deletes projects asynchronously, so reusing a name races the deletion.
+PROJECT = f"kestrel-soak-{secrets.token_hex(3)}"
 K = ["kubectl", "--context", "kestrel-ref", "-n", "kestrel"]
 
 JOBS = """
@@ -145,7 +146,6 @@ def main():
 
     # ------------------------------------------------------------------ setup
     check_cross_pod_freshness(token)
-    api_call(token, base, f"/api/{API}/project/{PROJECT}", "DELETE")
     s, text = api_call(token, base, f"/api/{API}/projects", "POST",
                        json.dumps({"name": PROJECT, "config": {"resources.source.1.type": "local"}}))
     v.check("setup: project created", s == 201, f"HTTP {s}")
