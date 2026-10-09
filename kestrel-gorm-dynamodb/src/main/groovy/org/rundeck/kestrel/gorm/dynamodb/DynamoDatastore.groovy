@@ -86,6 +86,16 @@ class DynamoDatastore extends SimpleMapDatastore {
         }
     }
 
+    /**
+     * Like Hibernate's datastore (and unlike GORM's generic one), open a session when none is
+     * bound: Rundeck calls GORM from event threads and requests without a session binding.
+     * Writes are written through, so an unbound session loses nothing when discarded.
+     */
+    @Override
+    Session getCurrentSession() {
+        DatastoreUtils.doGetSession(this, true)
+    }
+
     @Override
     protected Session createSession(PropertyResolver connectionDetails) {
         new DynamoSession(this, mappingContext, publisher)

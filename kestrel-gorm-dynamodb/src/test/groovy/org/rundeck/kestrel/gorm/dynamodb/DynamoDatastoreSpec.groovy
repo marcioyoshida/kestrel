@@ -210,6 +210,17 @@ class DynamoDatastoreSpec extends Specification {
         datastore.mappingContext.getPersistentEntity(TToken.name) != null
     }
 
+    def "GORM calls work without a bound session (event threads, background jobs)"() {
+        when:
+        def t = Thread.start { new TJob(uuid: 'nosession', project: 'bg', jobName: 'b').save(failOnError: true) }
+        t.join()
+        def found = null
+        Thread.start { found = TJob.findByUuid('nosession')?.project }.join()
+
+        then:
+        found == 'bg'
+    }
+
     def "unsupported criteria fail loudly instead of returning wrong rows"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { sqlRestriction('1=1') } }
