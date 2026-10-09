@@ -67,6 +67,11 @@ jobs:
     permissions:
       contents: read
       id-token: write   # OIDC to AWS, used only on pushes to main
+    env:
+      # Upstream lockfiles resolve through PagerDuty's private npm mirror. Fetch the same tarballs
+      # from the public registry; the lockfiles' integrity hashes still pin every package.
+      npm_config_registry: https://registry.npmjs.org/
+      npm_config_replace_registry_host: always
     steps:
       - name: Free runner disk (the build needs ~25 GB)
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
