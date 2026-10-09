@@ -16,6 +16,8 @@ if aws eks describe-cluster --name kestrel-ref >/dev/null 2>&1; then
     sleep 15
   done
 fi
+# CloudFront releases its VPC-origin ENIs about 10 minutes after the origin is deleted. The stack
+# waits on them before the private subnets and the VPC can go (about 12 minutes in total).
 log "cdk destroy KestrelRef"
 (cd "$ROOT/infra" && $CDK destroy KestrelRef -c ephemeral=true --force)
 

@@ -1,7 +1,11 @@
 # M0 validation run, 2026-10-09
 
 Kestrel M0 was built from this fork in CI, deployed to a throwaway EKS environment, proven
-end to end through CloudFront, and torn down. The environment was up for about 70 minutes.
+end to end through CloudFront, and torn down. The validated environment existed from 15:38 to
+16:20 UTC, and teardown took 12 minutes of that. An earlier attempt rolled back on its own
+after 26 minutes (see below). Afterwards no VPC, cluster, NAT gateway, database, snapshot,
+bucket, user pool, load balancer or Elastic IP remained. Only the KestrelCi stack (ECR and the
+OIDC role) is kept.
 
 ## What ran
 
