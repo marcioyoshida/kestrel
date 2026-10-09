@@ -1,8 +1,13 @@
 
+// Kestrel: with several web/runner pods sharing one database, Hibernate's per-JVM second-level
+// and query caches go stale (a write on one pod is invisible to another for up to the 120 s
+// TTL in jcache.xml; seen live as "Project does not exist" right after creating it). OSS has no
+// cross-server invalidation, so kubernetes mode reads through to the database.
+def kestrelMultiReplica = System.getenv('KESTREL_SCHEDULER_MODE') == 'kubernetes'
 hibernate {
-    cache.queries = true
-    cache.use_second_level_cache = true
-    cache.use_query_cache = true
+    cache.queries = !kestrelMultiReplica
+    cache.use_second_level_cache = !kestrelMultiReplica
+    cache.use_query_cache = !kestrelMultiReplica
     cache.region.factory_class = "jcache"
     cache.ehcache.missing_cache_strategy = "create"
     javax{

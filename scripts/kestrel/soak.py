@@ -202,6 +202,7 @@ def main():
     print(f"\nKills: {len(kills)}")
     window = {"every-minute-a": 1, "every-minute-b": 1, "every-2-minutes-sao-paulo": 2}
     total_expected = total_ok = 0
+    runner_exec_ids = set()
     for name, step in window.items():
         minutes = expected_minutes(step, start, end)
         items = ledger_items(table, jobs[name], minutes)
@@ -218,6 +219,7 @@ def main():
                  and start.timestamp() * 1000 < e["date-started"]["unixtime"] < (end.timestamp() + 900) * 1000]
         ids = {e["id"] for e in execs}
         ledger_ids = {it["executionId"] for it in started.values()}
+        runner_exec_ids |= ledger_ids
         extra = sorted(ids - ledger_ids)
         v.check(f"soak: {name} has no duplicate executions", not extra and len(execs) <= len(minutes),
                 f"{len(execs)} scheduled executions for {len(minutes)} minutes; not in ledger: {extra[:10]}")
@@ -225,6 +227,15 @@ def main():
         for e in execs:
             statuses[e["status"]] = statuses.get(e["status"], 0) + 1
         print(f"      {name}: statuses {statuses}")
+
+    # Runner-executed logs reach S3 too (runner pods have their own Pod Identity role).
+    bucket = v.out("KestrelRef", "LogBucket")
+    keys = v.sh("aws", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", f"project/{PROJECT}/",
+                "--query", "Contents[].Key", "--output", "text", check=False).split()
+    sample = sorted(runner_exec_ids)[:: max(1, len(runner_exec_ids) // 5)][:5]
+    missing_logs = [i for i in sample if f"project/{PROJECT}/{i}.rdlog" not in keys]
+    v.check("soak: runner execution logs stored in S3", sample and not missing_logs,
+            f"checked {sample}, missing {missing_logs}")
 
     attrs = json.loads(v.sh("aws", "sqs", "get-queue-attributes", "--queue-url", dlq, "--attribute-names",
                             "ApproximateNumberOfMessages"))["Attributes"]

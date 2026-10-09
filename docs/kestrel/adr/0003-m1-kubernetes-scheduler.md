@@ -74,10 +74,18 @@ misfire behaviour; Quartz fires once on recovery instead.
 - **Server identity.** Each pod derives its server UUID from its StatefulSet name. A restarted
   pod's BootStrap therefore cleans up only its own interrupted executions.
 
+- **Hibernate caches.** Upstream enables the per-JVM second-level and query caches, which
+  have a 120 s TTL and no cross-server invalidation. Kubernetes mode turns both off, so every
+  pod reads the database. This was found live: a project created on one pod was reported as
+  missing by the other for up to two minutes.
+
 ## Known gaps (tracked for later milestones)
 
 - The ACL cache is not invalidated across web pods (`cluster.clearAclCache` has no listener yet).
   Policy changes reach other pods only when their cache expires.
+- Project configuration is cached per pod by `ProjectManagerService` (reloaded within about
+  1 minute when the stored config changes). A project-level schedule or execution toggle
+  reaches runners within that window.
 - Live log tail of an execution running on another pod shows output only after it completes
   (S3 log storage). Live tail through DynamoDB is ADR 0001 §3, later.
 - Scale-down leaves executions of removed StatefulSet ordinals `running` until someone cleans
