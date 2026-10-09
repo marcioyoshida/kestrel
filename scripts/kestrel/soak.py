@@ -221,9 +221,13 @@ def main():
         ids = {e["id"] for e in execs}
         ledger_ids = {it["executionId"] for it in started.values()}
         runner_exec_ids |= ledger_ids
-        extra = sorted(ids - ledger_ids)
-        v.check(f"soak: {name} has no duplicate executions", not extra and len(execs) <= len(minutes),
-                f"{len(execs)} scheduled executions for {len(minutes)} minutes; not in ledger: {extra[:10]}")
+        # Executions are listed up to 15 min past the window (late firings), so compare them with
+        # every ledger claim over that same span: an execution without its own claim is a duplicate.
+        wide = expected_minutes(step, start, end + dt.timedelta(minutes=15))
+        wide_ids = {it["executionId"] for it in ledger_items(table, jobs[name], wide).values() if it["executionId"]}
+        extra = sorted(ids - wide_ids)
+        v.check(f"soak: {name} has no duplicate executions", not extra,
+                f"{len(execs)} scheduled executions, each with its own ledger claim; without one: {extra[:10]}")
         statuses = {}
         for e in execs:
             statuses[e["status"]] = statuses.get(e["status"], 0) + 1
