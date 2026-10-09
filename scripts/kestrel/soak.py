@@ -300,8 +300,12 @@ def check_cross_pod_abort(token, base):
     if not eid:
         v.check("abort: scheduled long job started on a runner", False, "no running execution in 4 min")
         return
+    t0 = time.time()
     s, text = api_call(token, base, f"/api/{API}/execution/{eid}/abort", "POST", "{}")
+    took = time.time() - t0
     state = json.loads(text).get("abort", {}).get("status") if s == 200 else text[:120]
+    v.check("abort: API answers promptly with the pending state", s == 200 and state == "pending" and took < 10,
+            f"HTTP {s} in {took:.1f}s: {state}")
     final = None
     for _ in range(15):
         time.sleep(3)
