@@ -179,7 +179,7 @@ class KestrelStack(Stack):
         ec2.CfnSecurityGroupIngress(
             self, "ProxyFromAlb", group_id=cluster_sg_id, ip_protocol="tcp",
             from_port=PROXY_PORT, to_port=PROXY_PORT, source_security_group_id=alb_sg.security_group_id,
-            description="ALB -> oauth2-proxy sidecar")
+            description="ALB to oauth2-proxy sidecar")
         alb = elbv2.ApplicationLoadBalancer(
             self, "Alb", vpc=vpc, internet_facing=False, security_group=alb_sg,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
