@@ -8,18 +8,25 @@ stateful server:
 |---|---|
 | deb/rpm or a single container | Helm chart on AWS EKS |
 | RDBMS via GORM/Hibernate | DynamoDB (M2) |
-| Quartz inside the web JVM | Kubernetes CronJobs + SQS (M1) |
+| Quartz inside the web JVM | Kubernetes CronJobs + SQS + runner pods (M1, done) |
 | Workflows run in the web JVM | Runner StatefulSet (pool) or per-run Job (isolated) |
 | SCM plugin (server-side git) | GitHub App: push sync + PR checks, no checkout (M3) |
 | Mixed GSP/Vue UI | Modernized Vue UI (ADR 0002) |
 
 ## Status
 
-**M0 is validated end to end** ([run of 2026-10-09](validation/2026-10-09-m0-reference.md), 21/21
-live checks). CI builds the Kestrel war and image from this repo. The Helm chart runs that image
-on EKS Auto Mode against RDS, behind an oauth2-proxy sidecar (Cognito or any OIDC issuer), an
-internal ALB and CloudFront. There is a single web replica because Quartz is still in-process
-until M1.
+- **M0 is validated** ([2026-10-09](validation/2026-10-09-m0-reference.md)): Helm on EKS
+  Auto Mode, RDS, an oauth2-proxy sign-in sidecar (Cognito or any OIDC issuer), an internal ALB
+  and CloudFront.
+- **M1 is validated** ([2026-10-09](validation/2026-10-09-m1-kubernetes-scheduler.md),
+  [ADR 0003](adr/0003-m1-kubernetes-scheduler.md)). With `scheduler.mode: kubernetes`, no
+  Quartz cron trigger exists:
+  - the Lease leader converges one CronJob per distinct schedule;
+  - each firing goes through SQS FIFO to runner pods and runs exactly once per job and minute
+    (DynamoDB ledger);
+  - web scales to N.
+
+  Chaos soak: 113/113 firings, no duplicates, through 9 pod kills.
 
 ## Build, deploy, prove, tear down
 
@@ -28,6 +35,7 @@ deploy/helm/kestrel/ci/test.sh        # chart lint, kubeconform, install guards 
 git push origin main                  # CI: checks, unit test, war + image -> ECR kestrel:<sha12>
 scripts/kestrel/deploy.sh             # cdk deploy KestrelCi + KestrelRef (ephemeral), secrets, helm
 python3 -I scripts/kestrel/validate.py   # edge, spoofing, sign-in, job run, S3 log, cron
+python3 -I scripts/kestrel/soak.py --minutes 45   # M1 exit test: pod kills, exactly-once accounting
 scripts/kestrel/teardown.sh           # helm uninstall, cdk destroy KestrelRef (keeps ECR)
 ```
 
@@ -41,6 +49,7 @@ Teardown leaves only the ECR repository and the GitHub OIDC role.
 
 - [ADR 0001: EKS-native architecture](adr/0001-eks-native-architecture.md)
 - [ADR 0002: UI modernization](adr/0002-ui-modernization.md)
+- [ADR 0003: M1 Kubernetes scheduler as built](adr/0003-m1-kubernetes-scheduler.md)
 
 ## Known upstream issues
 
