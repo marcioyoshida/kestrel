@@ -221,6 +221,27 @@ class DynamoDatastoreSpec extends Specification {
         found == 'bg'
     }
 
+    def "GORM calls inside another transaction manager's transaction do not join it"() {
+        given: 'a foreign (Hibernate-like) transaction with synchronization active'
+        def tm = new org.springframework.transaction.support.AbstractPlatformTransactionManager() {
+            protected Object doGetTransaction() { new Object() }
+            protected void doBegin(Object t, org.springframework.transaction.TransactionDefinition d) {}
+            protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus s) {}
+            protected void doRollback(org.springframework.transaction.support.DefaultTransactionStatus s) {}
+        }
+        def tt = new org.springframework.transaction.support.TransactionTemplate(tm)
+
+        when: 'saved inside it, then the foreign transaction rolls back'
+        tt.execute { status ->
+            new TJob(uuid: 'foreign-tx', project: 'ftx', jobName: 'n').save(failOnError: true)
+            status.setRollbackOnly()
+        }
+
+        then: 'no synchronization error, and the write-through save stands (DynamoDB is not part of that transaction)'
+        notThrown(Exception)
+        TJob.withNewSession { TJob.findByUuid('foreign-tx')?.project } == 'ftx'
+    }
+
     def "unsupported criteria fail loudly instead of returning wrong rows"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { sqlRestriction('1=1') } }

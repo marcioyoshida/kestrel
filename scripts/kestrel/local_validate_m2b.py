@@ -90,12 +90,17 @@ def main():
     s, _ = call(api, f"/api/{API}/storage/{key}", "DELETE", headers=T)
     check("key storage: delete", s == 204, f"HTTP {s}")
 
-    s, body = call(api, f"/api/{API}/project/{project}/webhooks", "POST", json.dumps({
+    s, body = call(api, f"/api/{API}/project/{project}/webhook", "POST", json.dumps({
         "name": "m2b-hook", "project": project, "user": "admin", "roles": "admin", "enabled": True,
         "eventPlugin": "log-webhook-event", "config": {}}), headers=T)
-    check("webhooks: create (Webhook + its AuthToken)", s == 200 and not json.loads(body).get("err"), f"HTTP {s} {body[:120]}")
+    check("webhooks: create (Webhook + its AuthToken)", s == 200 and "err" not in json.loads(body), f"HTTP {s} {body[:120]}")
     s, body = call(api, f"/api/{API}/project/{project}/webhooks", headers=T)
-    check("webhooks: list", s == 200 and any(w.get("name") == "m2b-hook" for w in json.loads(body)), f"HTTP {s}")
+    hooks = json.loads(body) if s == 200 else []
+    hook = next((w for w in hooks if w.get("name") == "m2b-hook"), None)
+    check("webhooks: list", hook is not None, f"HTTP {s}")
+    if hook:
+        s, body = call(urllib.request.build_opener(), f"/api/{API}/webhook/{hook['authToken']}", "POST", json.dumps({"hello": "kestrel"}))
+        check("webhooks: invoking it authenticates through its own token", s == 200, f"HTTP {s} {body[:120]}")
 
     s, body = call(api, f"/api/{API}/project/{project}/run/command", "POST", json.dumps({"exec": "echo kestrel-m2b"}), headers=T)
     eid = json.loads(body).get("execution", {}).get("id") if s == 200 else None

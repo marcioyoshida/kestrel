@@ -3,6 +3,8 @@ package org.rundeck.kestrel.gorm.dynamodb
 import groovy.transform.CompileStatic
 import org.grails.datastore.mapping.config.Settings
 import org.grails.datastore.mapping.core.Session
+import org.grails.datastore.mapping.transactions.SessionHolder
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.grails.datastore.mapping.core.connections.ConnectionSourceSettings
 import org.grails.datastore.mapping.core.connections.ConnectionSources
 import org.grails.datastore.mapping.core.connections.ConnectionSourcesInitializer
@@ -89,11 +91,20 @@ class DynamoDatastore extends SimpleMapDatastore {
     /**
      * Like Hibernate's datastore (and unlike GORM's generic one), open a session when none is
      * bound: Rundeck calls GORM from event threads and requests without a session binding.
-     * Writes are written through, so an unbound session loses nothing when discarded.
+     * A session bound by this datastore's own withSession/withTransaction is reused; otherwise a
+     * plain, unbound session is returned. It is deliberately not registered with Spring
+     * transaction synchronization: Rundeck's @Transactional services run Hibernate transactions,
+     * which must not try to bind or unbind this datastore's sessions (seen live: "No value for key
+     * [DynamoDatastore] bound to thread" on rollback). Writes are written through, so an unbound
+     * session loses nothing when discarded.
      */
     @Override
     Session getCurrentSession() {
-        DatastoreUtils.doGetSession(this, true)
+        def holder = TransactionSynchronizationManager.getResource(this)
+        if (holder instanceof SessionHolder && ((SessionHolder) holder).session != null) {
+            return ((SessionHolder) holder).session
+        }
+        connect()
     }
 
     @Override
