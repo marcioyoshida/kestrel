@@ -17,6 +17,7 @@ import org.grails.datastore.mapping.simple.SimpleMapDatastore
 import org.grails.datastore.mapping.simple.connections.SimpleMapConnectionSourceFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.core.env.PropertyResolver
+import org.grails.datastore.gorm.GormEnhancer
 import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
@@ -61,6 +62,21 @@ class DynamoDatastore extends SimpleMapDatastore {
         this.ids = new IdAllocator(tables, 100L)
         this.publisher = publisher
         markIndexed(indexed ?: [])
+        leaveSingleDatastoreLookupToOthers()
+    }
+
+    /**
+     * GORM resolves "the" datastore for code that is not bound to an entity (classes using
+     * {@code @Transactional} without being Spring beans, such as Rundeck's Quartz ExecutionJob)
+     * from a by-type registry, and fails once two datastores are registered ("More than one GORM
+     * implementation is configured", seen live). This datastore only serves the entities mapped
+     * to it, which GORM resolves per entity, so it leaves the single-datastore lookup to the
+     * primary datastore (Hibernate).
+     */
+    private void leaveSingleDatastoreLookupToOthers() {
+        def field = GormEnhancer.getDeclaredField('DATASTORES_BY_TYPE')
+        field.accessible = true
+        ((Map) field.get(null)).remove(this.getClass())
     }
 
     /** Convenience for tests: defaults, no extra indexes. */

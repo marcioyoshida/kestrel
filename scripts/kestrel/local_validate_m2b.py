@@ -102,7 +102,7 @@ def main():
         s, body = call(urllib.request.build_opener(), f"/api/{API}/webhook/{hook['authToken']}", "POST", json.dumps({"hello": "kestrel"}))
         check("webhooks: invoking it authenticates through its own token", s == 200, f"HTTP {s} {body[:120]}")
 
-    s, body = call(api, f"/api/{API}/project/{project}/run/command", "POST", json.dumps({"exec": "echo kestrel-m2b"}), headers=T)
+    s, body = call(api, f"/api/{API}/project/{project}/run/command", "POST", json.dumps({"exec": "echo kestrel-m2b", "project": project}), headers=T)
     eid = json.loads(body).get("execution", {}).get("id") if s == 200 else None
     status = None
     for _ in range(30):

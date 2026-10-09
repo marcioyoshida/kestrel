@@ -242,6 +242,16 @@ class DynamoDatastoreSpec extends Specification {
         TJob.withNewSession { TJob.findByUuid('foreign-tx')?.project } == 'ftx'
     }
 
+    def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {
+        when:
+        org.grails.datastore.gorm.GormEnhancer.findSingleDatastore()
+
+        then: 'only this datastore exists in the spec, and it is not offered as the single one'
+        def e = thrown(IllegalStateException)
+        e.message.contains('No GORM implementations')
+        TJob.withNewSession { TJob.count() } >= 0  // entity-bound lookups still work
+    }
+
     def "unsupported criteria fail loudly instead of returning wrong rows"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { sqlRestriction('1=1') } }
