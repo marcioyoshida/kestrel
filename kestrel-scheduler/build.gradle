@@ -2,8 +2,16 @@
  * Kestrel scheduler (ADR 0001 §2): Quartz-cron translation, schedule buckets, the Kubernetes
  * CronJob reconciler with Lease leader election, and the SQS fire queue + DynamoDB fire ledger
  * used by runner pods. Plain Java so it tests without Grails; wired into rundeckapp by
- * rundeck.services.kestrel.*.
+ * org.rundeck.kestrel.app.*.
+ *
+ * rundeckapp consumes the `shaded` artifact: the AWS SDK is relocated under
+ * org.rundeck.kestrel.shaded, because Rundeck plugins (e.g. the S3 log store) bring their own
+ * SDK and java.util.ServiceLoader would otherwise mix the two copies
+ * ("UrlConnectionSdkHttpService not a subtype"). No SDK type appears in the API rundeckapp uses.
  */
+plugins {
+    id 'com.gradleup.shadow' version '8.3.9'
+}
 apply from: "../gradle/java-version.gradle"
 apply plugin: 'groovy'
 apply plugin: 'java-library'
@@ -14,22 +22,49 @@ repositories {
 }
 
 dependencies {
-    api "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
-    api platform("software.amazon.awssdk:bom:${awsSdkV2Version}")
-    api("software.amazon.awssdk:sqs") {
+    // Provided by rundeckapp at runtime; not bundled in the shaded jar.
+    compileOnly "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    implementation platform("software.amazon.awssdk:bom:${awsSdkV2Version}")
+    implementation("software.amazon.awssdk:sqs") {
         exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
         exclude group: 'software.amazon.awssdk', module: 'apache-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache5-client'
     }
-    api("software.amazon.awssdk:dynamodb") {
+    implementation("software.amazon.awssdk:dynamodb") {
         exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
         exclude group: 'software.amazon.awssdk', module: 'apache-client'
+        exclude group: 'software.amazon.awssdk', module: 'apache5-client'
     }
     implementation "software.amazon.awssdk:url-connection-client"
-    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
 
+    testImplementation "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
+    testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
     testImplementation "org.spockframework:spock-core:${spockVersion}"
     testImplementation "org.apache.groovy:groovy-all:${groovyVersion}"
     testImplementation "org.quartz-scheduler:quartz:${quartzVersion}"  // oracle for exact-translation tests
+}
+
+shadowJar {
+    archiveClassifier = 'shaded'
+    relocate 'software.amazon', 'org.rundeck.kestrel.shaded.software.amazon'
+    relocate 'org.reactivestreams', 'org.rundeck.kestrel.shaded.org.reactivestreams'
+    mergeServiceFiles()
+    dependencies {
+        exclude(dependency('com.fasterxml.jackson.core:.*:.*'))
+        exclude(dependency('org.slf4j:.*:.*'))
+    }
+}
+
+configurations {
+    shaded {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+artifacts {
+    shaded shadowJar
 }
 
 test {

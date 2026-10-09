@@ -187,7 +187,8 @@ dependencies {
 
     // Rundeck project dependencies.
     implementation project(':core')
-    implementation project(':kestrel-scheduler')
+    // Shaded: Kestrel's AWS SDK is relocated so plugins keep their own (see kestrel-scheduler/build.gradle).
+    implementation project(path: ':kestrel-scheduler', configuration: 'shaded')
     implementation project(':rundeck-storage:rundeck-storage-filesys')
     implementation project(':rundeck-app-util')
 

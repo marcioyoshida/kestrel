@@ -146,8 +146,9 @@ jobs:
           ! git grep -q pd-internal.com -- '*package-lock.json'
       - name: Kestrel unit tests
         run: |
-          ./gradlew :kestrel-scheduler:test \
+          ./gradlew :kestrel-scheduler:test :kestrel-scheduler:shadowJar \
             :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
+          kestrel-scheduler/check-shaded-jar.sh
       - name: Build war and image
         env:
           REPO: ${{ vars.KESTREL_ECR_REPOSITORY || 'kestrel' }}

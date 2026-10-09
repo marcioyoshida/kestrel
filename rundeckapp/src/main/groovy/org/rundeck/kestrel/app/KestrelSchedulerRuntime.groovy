@@ -8,7 +8,6 @@ import org.quartz.impl.matchers.NameMatcher
 import org.rundeck.kestrel.scheduler.AwsClients
 import org.rundeck.kestrel.scheduler.CronJobReconciler
 import org.rundeck.kestrel.scheduler.CronJobTemplate
-import org.rundeck.kestrel.scheduler.DynamoFireLedger
 import org.rundeck.kestrel.scheduler.FiringCoordinator
 import org.rundeck.kestrel.scheduler.InClusterKubeApi
 import org.rundeck.kestrel.scheduler.LeaseLeaderElector
@@ -72,15 +71,13 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
         log.info("Kestrel scheduler: role=${kestrelSettings.role} pod=${kestrelSettings.podName} server=${serverUuid}")
 
         if (kestrelSettings.runner) {
-            def sqs = AwsClients.sqs(kestrelSettings.region)
-            def ddb = AwsClients.dynamo(kestrelSettings.region)
-            kestrelLauncher.handoffTimeout = kestrelSettings.handoffTimeout
             quartzScheduler.listenerManager.addJobListener(kestrelHandoffRegistry, NameMatcher.jobNameStartsWith('kestrel:'))
+            kestrelLauncher.handoffTimeout = kestrelSettings.handoffTimeout
             def coordinator = new FiringCoordinator(kestrelJobCatalog,
-                new DynamoFireLedger(ddb, kestrelSettings.ledgerTable, Duration.ofDays(7)),
+                AwsClients.fireLedger(kestrelSettings.region, kestrelSettings.ledgerTable, Duration.ofDays(7)),
                 kestrelLauncher, serverUuid, kestrelSettings.staleClaimAfter, kestrelSettings.maxLateness,
                 Clock.systemUTC())
-            consumer = new SqsFireConsumer(sqs, kestrelSettings.queueUrl, coordinator)
+            consumer = AwsClients.fireConsumer(kestrelSettings.region, kestrelSettings.queueUrl, coordinator)
             def t = new Thread(consumer, 'kestrel-fire-consumer')
             t.daemon = true
             t.start()
