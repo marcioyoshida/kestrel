@@ -1,5 +1,6 @@
 package org.rundeck.kestrel.app
 
+import com.dtolabs.rundeck.core.schedule.JobScheduleManager
 import groovy.util.logging.Slf4j
 import org.quartz.JobKey
 import org.quartz.Scheduler
@@ -23,7 +24,7 @@ import java.util.concurrent.TimeoutException
 class QuartzLauncher implements FiringCoordinator.Launcher {
     Scheduler quartzScheduler
     ScheduledExecutionService scheduledExecutionService
-    KestrelJobScheduleManager rundeckJobScheduleManager
+    JobScheduleManager rundeckJobScheduleManager
     HandoffRegistry kestrelHandoffRegistry
     Duration handoffTimeout = Duration.ofSeconds(60)
 

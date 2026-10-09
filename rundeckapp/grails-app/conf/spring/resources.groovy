@@ -475,8 +475,11 @@ beans={
     }
     if (kestrel.kubernetesMode) {
         kestrelHandoffRegistry(HandoffRegistry)
-        rundeckJobScheduleManager(KestrelJobScheduleManager) {
+        kestrelQuartzJobScheduleManager(QuartzJobScheduleManagerService) {
             quartzScheduler = ref('quartzScheduler')
+        }
+        rundeckJobScheduleManager(KestrelJobScheduleManager) {
+            quartzManager = ref('kestrelQuartzJobScheduleManager')
             kestrelHandoffRegistry = ref('kestrelHandoffRegistry')
         }
         rundeckJobSchedulesManager(KubernetesJobSchedulesManager) {
