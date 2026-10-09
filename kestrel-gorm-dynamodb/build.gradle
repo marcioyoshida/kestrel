@@ -48,6 +48,9 @@ shadowJar {
     relocate 'software.amazon', 'org.rundeck.kestrel.shaded.software.amazon'
     relocate 'org.reactivestreams', 'org.rundeck.kestrel.shaded.org.reactivestreams'
     mergeServiceFiles()
+    dependencies {
+        exclude(dependency('org.slf4j:.*:.*'))  // provided by rundeckapp
+    }
 }
 
 configurations {
