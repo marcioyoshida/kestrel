@@ -15,21 +15,41 @@ stateful server:
 
 ## Status
 
-**M0**: the Helm chart in [`deploy/helm/kestrel`](../../deploy/helm/kestrel) runs the upstream
-`rundeck/rundeck:6.2.1` image (amd64) against RDS, behind an internal ALB used as a CloudFront
-VPC Origin. Single web replica, because Quartz is still in-process.
+**M0 is validated end to end** ([run of 2026-10-09](validation/2026-10-09-m0-reference.md), 21/21
+live checks). CI builds the Kestrel war and image from this repo. The Helm chart runs that image
+on EKS Auto Mode against RDS, behind an oauth2-proxy sidecar (Cognito or any OIDC issuer), an
+internal ALB and CloudFront. There is a single web replica because Quartz is still in-process
+until M1.
+
+## Build, deploy, prove, tear down
+
+```bash
+deploy/helm/kestrel/ci/test.sh        # chart lint, kubeconform, install guards (also in CI)
+git push origin main                  # CI: checks, unit test, war + image -> ECR kestrel:<sha12>
+scripts/kestrel/deploy.sh             # cdk deploy KestrelCi + KestrelRef (ephemeral), secrets, helm
+python3 -I scripts/kestrel/validate.py   # edge, spoofing, sign-in, job run, S3 log, cron
+scripts/kestrel/teardown.sh           # helm uninstall, cdk destroy KestrelRef (keeps ECR)
+```
+
+Set `AWS_PROFILE` (default `my2027`) and `CDK` to point at the CDK CLI, for example
+`CDK="node …/aws-cdk/bin/cdk"`. `deploy.sh` refuses to run until CI has pushed the image for
+the current commit. Expect about $0.30/hour while the reference environment is up: the EKS
+control plane, one m5a.large node with the Auto Mode fee, NAT, RDS micro and the ALB.
+Teardown leaves only the ECR repository and the GitHub OIDC role.
 
 ## Decisions
 
 - [ADR 0001: EKS-native architecture](adr/0001-eks-native-architecture.md)
 - [ADR 0002: UI modernization](adr/0002-ui-modernization.md)
 
-## Known upstream issue
+## Known upstream issues
 
-`/monitoring/**` is `permitAll` (`rundeckapp/grails-app/conf/application.groovy`), and monitoring
-defaults to on (`MonitoringController.isMonitoringEnabled`). That appears to expose thread dumps
-and metrics without authentication. The chart blocks `/monitoring` at the ALB, and CloudFront
-must block it too. To be confirmed in the M0 smoke test.
+- `/monitoring/**` is `permitAll` (`rundeckapp/grails-app/conf/application.groovy`) and
+  monitoring is on by default, so thread dumps and metrics are exposed without authentication.
+  Kestrel blocks `/monitoring` at both CloudFront and the ALB (verified: 404). The target-group
+  health check still reaches `/monitoring/health/readiness` through the sidecar.
+- In preauth mode, roles are re-read from request headers on every request, so the proxy in
+  front must own those headers on every route. See the validation notes.
 
 ## Trademark
 

@@ -79,11 +79,13 @@ def sign_in(base, email, password):
     status, _, page, login_url = call(browser, base + "/")
     if "cognito" not in urllib.parse.urlparse(login_url).netloc.lower() and "amazoncognito" not in login_url:
         raise RuntimeError(f"expected the Cognito login page, got {status} {login_url}")
-    form = re.search(r'<form[^>]*name="cognitoSignInForm"[^>]*action="([^"]+)"', page)
-    csrf = re.search(r'name="_csrf"\s+value="([^"]+)"', page)
-    if not (form and csrf):
+    form_tag = re.search(r'<form[^>]*cognitoSignInForm[^>]*>', page)
+    action = form_tag and re.search(r'action="([^"]+)"', form_tag.group(0))
+    csrf_tag = re.search(r'<input[^>]*name="_csrf"[^>]*>', page)
+    csrf = csrf_tag and re.search(r'value="([^"]+)"', csrf_tag.group(0))
+    if not (action and csrf):
         raise RuntimeError("Cognito login form not found (managed login v2 is not scriptable this way)")
-    action = urllib.parse.urljoin(login_url, html.unescape(form.group(1)))
+    action = urllib.parse.urljoin(login_url, html.unescape(action.group(1)))
     body = urllib.parse.urlencode({"_csrf": csrf.group(1), "username": email, "password": password,
                                    "signInSubmitButton": "Sign in"})
     status, _, page, final = call(browser, action, "POST",
@@ -154,8 +156,9 @@ def main():
     forged = {"X-Forwarded-Email": "attacker@example.com", "X-Forwarded-User": "attacker",
               "X-Forwarded-Groups": "admin", "X-Forwarded-Preferred-Username": "admin",
               "X-Forwarded-Uuid": "admin", "X-Forwarded-Roles": "admin", "Accept": "application/json"}
-    s, h, *_ = call(anon, base + "/menu/home", headers=forged)
-    check("spoof: forged identity headers on UI do not sign in", s == 302, f"HTTP {s}")
+    s, h, *_ = call(anon, base + "/menu/home", headers=dict(forged, Accept="text/html"))
+    check("spoof: forged identity headers on UI do not sign in",
+          s == 302 and "cognito" in (h.get("Location") or ""), f"HTTP {s}")
     for path in (f"/api/{API}/system/info", f"/api/{API}/projects"):
         s, _, body, _ = call(anon, base + path, headers=forged)
         check(f"spoof: forged headers on {path} rejected", s in (401, 403), f"HTTP {s} {body[:80]}")
@@ -176,18 +179,38 @@ def main():
 
     # ---------------------------------------------------------------- sign-in
     email, password = cognito_user(pool, "admin")
+    plain, plain_pw = cognito_user(pool, "user")
     token = None
     try:
         jar, s, page, final = sign_in(base, email, password)
-        signed_in = s == 200 and final.startswith(base) and email in page
-        check("sign-in: Cognito admin reaches Rundeck", signed_in, f"HTTP {s} at {final[:80]}")
+        check("sign-in: Cognito admin reaches Rundeck", s == 200 and final.startswith(base),
+              f"HTTP {s} at {final[:80]}")
         session = client(jar)
+        s, _, body, _ = call(session, f"{base}/api/{API}/user/info", headers={"Accept": "application/json"})
+        who = json.loads(body).get("login") if s == 200 else None
+        check("sign-in: Rundeck sees the IdP identity", who == email, f"HTTP {s} login={who}")
+        s, *_ = call(session, f"{base}/api/{API}/system/info", headers={"Accept": "application/json"})
+        check("sign-in: admin group grants admin API access", s == 200, f"HTTP {s}")
+
+        # A signed-in non-admin forging admin headers must stay non-admin: the proxy overwrites
+        # them from the session (Rundeck re-reads roles from these headers on every request).
+        pjar, ps, *_ = sign_in(base, plain, plain_pw)
+        pc = client(pjar)
+        s, _, body, _ = call(pc, f"{base}/api/{API}/user/roles", headers=forged)
+        roles = json.loads(body).get("roles") if s == 200 else None
+        s2, _, body2, _ = call(pc, f"{base}/api/{API}/user/info", headers=forged)
+        who = json.loads(body2).get("login") if s2 == 200 else None
+        check("spoof: signed-in non-admin + forged headers keeps real identity", ps == 200 and roles == ["user"]
+              and who == plain, f"roles={roles} login={who}")
+        s, *_ = call(pc, f"{base}/api/{API}/system/acl/", headers=forged)
+        check("spoof: signed-in non-admin + forged admin headers denied admin API", s == 403,
+              f"system/acl HTTP {s}")
         s, _, body, _ = call(session, f"{base}/api/{API}/tokens", "POST",
                              {"Content-Type": "application/json", "Accept": "application/json"},
                              json.dumps({"user": email, "roles": "admin", "duration": "1h"}))
         if s in (200, 201):
             token = json.loads(body).get("token")
-        check("sign-in: session can mint an API token", token, f"HTTP {s} {body[:120]}")
+        check("sign-in: session can mint an API token", token, f"HTTP {s}")  # never print the token
         if not token:
             return
         api = client()
@@ -244,7 +267,8 @@ def main():
         if token:
             call(client(), f"{base}/api/{API}/project/{PROJECT}", "DELETE",
                  {"X-Rundeck-Auth-Token": token, "Accept": "application/json"})
-        sh("aws", "cognito-idp", "admin-delete-user", "--user-pool-id", pool, "--username", email, check=False)
+        for u in (email, plain):
+            sh("aws", "cognito-idp", "admin-delete-user", "--user-pool-id", pool, "--username", u, check=False)
 
 
 if __name__ == "__main__":
