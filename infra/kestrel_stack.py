@@ -36,9 +36,12 @@ CLOUDFRONT_ORIGIN_FACING_PL = "pl-3b927c52"  # com.amazonaws.global.cloudfront.o
 
 
 class KestrelStack(Stack):
-    def __init__(self, scope: Construct, cid: str, *, admin_principal_arn: str, **kw) -> None:
+    def __init__(self, scope: Construct, cid: str, *, admin_principal_arn: str, ephemeral: bool = False,
+                 **kw) -> None:
         super().__init__(scope, cid, **kw)
         Tags.of(self).add("project", "kestrel")
+        # ephemeral: validation runs; `cdk destroy` leaves nothing behind (no bucket, pool or snapshot).
+        keep = RemovalPolicy.DESTROY if ephemeral else RemovalPolicy.RETAIN
 
         # ---------------------------------------------------------------- network
         vpc = ec2.Vpc(
@@ -131,7 +134,8 @@ class KestrelStack(Stack):
             enforce_ssl=True,
             lifecycle_rules=[s3.LifecycleRule(expiration=Duration.days(90),
                                               abort_incomplete_multipart_upload_after=Duration.days(1))],
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=keep,
+            auto_delete_objects=ephemeral,
         )
 
         web_role = iam.Role(self, "WebPodRole", assumed_by=iam.ServicePrincipal("pods.eks.amazonaws.com"))
@@ -165,7 +169,7 @@ class KestrelStack(Stack):
             storage_encrypted=True,
             multi_az=False,
             backup_retention=Duration.days(1),
-            removal_policy=RemovalPolicy.SNAPSHOT,
+            removal_policy=RemovalPolicy.DESTROY if ephemeral else RemovalPolicy.SNAPSHOT,
         )
 
         # ---------------------------------------------------------------- internal ALB
@@ -246,7 +250,7 @@ class KestrelStack(Stack):
             mfa=cognito.Mfa.OPTIONAL,
             mfa_second_factor=cognito.MfaSecondFactor(sms=False, otp=True),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=keep,
         )
         # Group names become Rundeck roles via the cognito:groups claim; `admin` matches the
         # image's default admin.aclpolicy.

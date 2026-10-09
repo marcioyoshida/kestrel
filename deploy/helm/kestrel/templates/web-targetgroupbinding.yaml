@@ -1,0 +1,16 @@
+{{- if .Values.targetGroupBinding.enabled }}
+# Registers the web pods (IP targets) in a target group created by infra/ (EKS Auto Mode's
+# load-balancing controller needs the eks:eks-cluster-name tag on that target group).
+apiVersion: {{ .Values.targetGroupBinding.apiVersion }}
+kind: TargetGroupBinding
+metadata:
+  name: {{ include "kestrel.fullname" . }}-web
+  labels:
+    {{- include "kestrel.labels" . | nindent 4 }}
+spec:
+  targetGroupARN: {{ .Values.targetGroupBinding.targetGroupArn | quote }}
+  targetType: ip
+  serviceRef:
+    name: {{ include "kestrel.fullname" . }}-web
+    port: {{ .Values.service.port }}
+{{- end }}

@@ -67,7 +67,8 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
           ports:
-            - name: http
+            # With auth, Rundeck listens on 127.0.0.1 only; the sidecar's port is "http".
+            - name: {{ ternary "rundeck" "http" .Values.auth.enabled }}
               containerPort: 4440
           envFrom:
             - configMapRef:
@@ -89,16 +90,18 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           # Grails boot + migrations can take minutes; liveness only starts after startup passes.
+          # With auth, Rundeck is bound to loopback, so probes exec curl inside the container.
+          {{- $ready := "/monitoring/health/readiness" }}
           startupProbe:
-            httpGet: { path: /monitoring/health/readiness, port: http }
+            {{- include "kestrel.web.probe" (list . $ready) | nindent 12 }}
             periodSeconds: 10
             failureThreshold: 60
           readinessProbe:
-            httpGet: { path: /monitoring/health/readiness, port: http }
+            {{- include "kestrel.web.probe" (list . $ready) | nindent 12 }}
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
-            httpGet: { path: /monitoring/health, port: http }
+            {{- include "kestrel.web.probe" (list . "/monitoring/health") | nindent 12 }}
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 6
@@ -110,6 +113,9 @@ spec:
             {{- if .Values.plugins }}
             - { name: libext, mountPath: /home/rundeck/libext }
             {{- end }}
+        {{- if .Values.auth.enabled }}
+        {{- include "kestrel.auth.container" . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: data
           emptyDir: {}

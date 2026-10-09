@@ -75,4 +75,20 @@ class RundeckPreauthenticationRequestHeaderFilterTest extends Specification {
         then:
         result == "admin:role1"
     }
+
+    def "GetPreAuthenticatedCredentials joins repeated roles headers"() {
+        when:
+        def request = Stub(HttpServletRequest) {
+            getHeaders("roles") >> Collections.enumeration(["admin", "user"])
+            getHeader("roles") >> "admin"
+        }
+
+        RundeckPreauthenticationRequestHeaderFilter filter = new RundeckPreauthenticationRequestHeaderFilter()
+        filter.rolesHeader = "roles"
+        filter.rolesDelimiter = ","
+        def result = filter.getPreAuthenticatedCredentials(request)
+
+        then:
+        result == "admin,user"
+    }
 }

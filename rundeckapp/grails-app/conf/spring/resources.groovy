@@ -875,6 +875,7 @@ beans={
             enabled = grailsApplication.config.getProperty("rundeck.security.authorization.preauthenticated.enabled", Boolean.class,false)
             userNameHeader = grailsApplication.config.getProperty("rundeck.security.authorization.preauthenticated.userNameHeader", String.class)
             rolesHeader = grailsApplication.config.getProperty("rundeck.security.authorization.preauthenticated.userRolesHeader", String.class)
+            rolesDelimiter = grailsApplication.config.getProperty("rundeck.security.authorization.preauthenticated.delimiter", String.class, ",")
             rolesAttribute = grailsApplication.config.getProperty("rundeck.security.authorization.preauthenticated.attributeName", String.class)
             authenticationManager = ref('authenticationManager')
             authenticationSuccessHandler = ref("rundeckPreauthSuccessEventHandler")

@@ -33,6 +33,8 @@ class RundeckPreauthenticationRequestHeaderFilter extends AbstractPreAuthenticat
     String rolesAttribute = "REMOTE_USER_GROUPS";
     String userNameHeader = null
     String rolesHeader = null
+    /** Delimiter used to join repeated roles headers; must match the role source's delimiter. */
+    String rolesDelimiter = ","
 
     @Override
     void doFilter(final ServletRequest request, final ServletResponse response, final FilterChain chain)
@@ -66,11 +68,22 @@ class RundeckPreauthenticationRequestHeaderFilter extends AbstractPreAuthenticat
         if (rolesAttribute != null && rolesHeader != null) {
             // Get the roles sent by the proxy and add them onto the request as an attribute for
             // PreauthenticatedAttributeRoleSource
-            forwardedRoles = request.getHeader(rolesHeader);
+            forwardedRoles = joinHeaderValues(request, rolesHeader)
             request.setAttribute(rolesAttribute, forwardedRoles);
             LOG.debug("Roles header " + rolesHeader);
             LOG.debug("Roles received " + forwardedRoles);
         }
         return forwardedRoles
+    }
+
+    /**
+     * Returns every value of a possibly repeated header, joined with {@link #rolesDelimiter}.
+     * Proxies such as oauth2-proxy send one header line per group, and
+     * {@link HttpServletRequest#getHeader} would return only the first of them.
+     */
+    private String joinHeaderValues(final HttpServletRequest request, final String name) {
+        Enumeration<String> values = request.getHeaders(name)
+        List<String> all = values != null ? Collections.list(values).findAll { it } : []
+        return all ? all.join(rolesDelimiter) : request.getHeader(name)
     }
 }

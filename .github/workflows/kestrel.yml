@@ -1,0 +1,109 @@
+# Kestrel CI: validate the Helm chart and the CDK app, build the Kestrel war + container image
+# from this fork, and (on main) push it to the KestrelCi ECR repository via GitHub OIDC.
+name: Kestrel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kestrel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HELM_VERSION: v3.19.0
+  KUBECONFORM_VERSION: v0.7.0
+  CDK_VERSION: 2.1145.0
+
+jobs:
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install helm and kubeconform (checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "$(curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum | cut -d' ' -f1)  helm-${HELM_VERSION}-linux-amd64.tar.gz" | sha256sum -c -
+          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz" && mv linux-amd64/helm bin/
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -fsSLO "$base/kubeconform-linux-amd64.tar.gz" && curl -fsSLO "$base/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: deploy/helm/kestrel/ci/test.sh
+
+  infra:
+    name: CDK synth
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: |
+          python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+          npm install -g "aws-cdk@${CDK_VERSION}"
+          cdk synth -q -c ephemeral=true
+          cdk synth -q
+
+  image:
+    name: Build war + image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write   # OIDC to AWS, used only on pushes to main
+    steps:
+      - name: Free runner disk (the build needs ~25 GB)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # the build derives its version and commit from git
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Kestrel unit tests
+        run: ./gradlew :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
+      - name: Build war and image
+        env:
+          REPO: ${{ vars.KESTREL_ECR_REPOSITORY || 'kestrel' }}
+        run: |
+          ./gradlew :rundeckapp:bootWar
+          ./gradlew :docker:officialBuild -PdockerRepository="$REPO" \
+            -PdockerTags="${GITHUB_SHA::12}" -PjreVersion=openjdk-17-jre-headless
+          docker run --rm --entrypoint java "$REPO:${GITHUB_SHA::12}" -version
+      - name: AWS credentials (OIDC)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.KESTREL_ECR_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.KESTREL_ECR_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Push to ECR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.KESTREL_ECR_ROLE_ARN != ''
+        env:
+          REPO: ${{ vars.KESTREL_ECR_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
+          docker push "$REPO:${GITHUB_SHA::12}"
+          docker tag "$REPO:${GITHUB_SHA::12}" "$REPO:main" && docker push "$REPO:main"
+          echo "Pushed $REPO:${GITHUB_SHA::12}" >> "$GITHUB_STEP_SUMMARY"

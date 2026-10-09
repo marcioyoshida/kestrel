@@ -31,3 +31,13 @@ data:
   RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_BUCKET: {{ required "logStorage.s3.bucket is required" .Values.logStorage.s3.bucket | quote }}
   RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_REGION: {{ required "logStorage.s3.region is required" .Values.logStorage.s3.region | quote }}
   {{- end }}
+  {{- if .Values.auth.enabled }}
+  # Only the oauth2-proxy sidecar can reach Rundeck, so its identity headers can be trusted.
+  RUNDECK_SERVER_ADDRESS: "127.0.0.1"
+  RUNDECK_PREAUTH_ENABLED: "true"
+  RUNDECK_PREAUTH_USERNAME_HEADER: "X-Forwarded-Email"
+  RUNDECK_PREAUTH_ROLES_HEADER: "X-Forwarded-Groups"
+  RUNDECK_PREAUTH_DELIMITER: ","
+  RUNDECK_PREAUTH_REDIRECT_LOGOUT: "true"
+  RUNDECK_PREAUTH_REDIRECT_URL: "/oauth2/sign_out"
+  {{- end }}

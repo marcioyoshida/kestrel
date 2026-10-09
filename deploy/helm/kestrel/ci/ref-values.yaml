@@ -1,0 +1,23 @@
+# Render-test values: the shape deploy.sh produces for the reference environment.
+publicUrl: https://d111111abcdef8.cloudfront.net
+image: { repository: 668449743071.dkr.ecr.us-east-1.amazonaws.com/kestrel, tag: "0000000" }
+web: { serverUuid: 3f6c1a52-5b5e-4a1f-9d1c-2f6b8e9a0c11 }
+database:
+  url: jdbc:postgresql://db.example.internal:5432/kestrel
+  existingSecret: kestrel-db
+keyStorage: { existingSecret: kestrel-keystorage }
+logStorage: { s3: { enabled: true, bucket: kestrel-logs, region: us-east-1 } }
+plugins:
+  - name: rundeck-s3-log-plugin-3.0.6.jar
+    url: https://github.com/rundeck-plugins/rundeck-s3-log-plugin/releases/download/3.0.6/rundeck-s3-log-plugin-3.0.6.jar
+    sha256: f28abecc4708afdf7ada3ed936d56bb9ec907be78d6337666bffa27a2e45e4ab
+    provides: org.rundeck.amazon-s3
+auth:
+  enabled: true
+  provider: cognito
+  issuerUrl: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE
+  existingSecret: kestrel-auth
+ingress: { enabled: false }
+targetGroupBinding:
+  enabled: true
+  targetGroupArn: arn:aws:elasticloadbalancing:us-east-1:668449743071:targetgroup/kestrel-web/0123456789abcdef

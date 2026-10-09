@@ -1,10 +1,16 @@
 Kestrel (M0) installed as {{ include "kestrel.fullname" . }}.
 
 - Web: {{ .Values.web.replicas }} replica(s), scheduler mode "{{ .Values.scheduler.mode }}".
+{{- if .Values.targetGroupBinding.enabled }}
+- Pods are registered in {{ .Values.targetGroupBinding.targetGroupArn }}
+  (kubectl get targetgroupbinding -n {{ .Release.Namespace }}).
+{{- else if .Values.ingress.enabled }}
 - Internal ALB: kubectl get ingress {{ include "kestrel.fullname" . }}-web -n {{ .Release.Namespace }}
   Point a CloudFront VPC Origin at that ALB. Also block /monitoring/* at CloudFront.
+{{- end }}
+- Sign-in: {{ if .Values.auth.enabled }}oauth2-proxy ({{ .Values.auth.provider }}); Rundeck listens on 127.0.0.1 only{{ else }}Rundeck form login{{ end }}.
 - Public URL: {{ .Values.publicUrl }}
 
-Smoke test after the pod is Ready:
+Smoke test after the pod is Ready (scripts/kestrel/validate.sh runs the full set):
   curl -s -o /dev/null -w '%{http_code}\n' {{ .Values.publicUrl }}/monitoring/threaddump   # expect 404
-  curl -s -o /dev/null -w '%{http_code}\n' {{ .Values.publicUrl }}/user/login              # expect 200
+  curl -s -o /dev/null -w '%{http_code}\n' {{ .Values.publicUrl }}/                        # expect {{ if .Values.auth.enabled }}302 to the IdP{{ else }}302 to /user/login{{ end }}
