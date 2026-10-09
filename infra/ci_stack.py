@@ -57,7 +57,7 @@ class KestrelCiStack(Stack):
             }),
         )
         repo.grant_push(role)
-        trigger_repo.grant_push(role)
+        trigger_repo.grant_pull_push(role)  # buildx reads back the multi-arch manifest list
 
         CfnOutput(self, "RepositoryUri", value=repo.repository_uri)
         CfnOutput(self, "TriggerRepositoryUri", value=trigger_repo.repository_uri)
