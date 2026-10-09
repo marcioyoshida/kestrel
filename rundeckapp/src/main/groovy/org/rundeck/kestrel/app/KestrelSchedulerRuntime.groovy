@@ -1,5 +1,6 @@
 package org.rundeck.kestrel.app
 
+import grails.events.bus.EventBus
 import groovy.util.logging.Slf4j
 import org.quartz.CronTrigger
 import org.quartz.Scheduler
@@ -16,6 +17,7 @@ import org.springframework.beans.factory.DisposableBean
 import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.context.ApplicationListener
 import rundeck.Execution
+import rundeck.services.ExecutionService
 import rundeck.services.FrameworkService
 import rundeck.services.ScheduledExecutionService
 
@@ -32,7 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * <ul>
  *   <li>web pods: Lease election; the leader reconciles CronJobs every resync interval and on demand</li>
  *   <li>runner pods: the SQS fire-queue consumer</li>
- *   <li>every pod: the cross-pod abort poller, and a check that Quartz holds no cron triggers</li>
+ *   <li>every pod: the {@code cluster.abortExecution} listener, the cross-pod abort poller, and a
+ *       check that Quartz holds no cron triggers</li>
  * </ul>
  */
 @Slf4j
@@ -92,6 +95,16 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             long renew = Math.max(1, (long) (kestrelSettings.leaseDuration.seconds / 3))
             loops.scheduleWithFixedDelay(this.&leaderTick, 0, renew, TimeUnit.SECONDS)
         }
+        // A closure subscription, not @Subscriber: grails-events passes only a closure subscriber's
+        // return value to sendAndReceive's reply, and upstream waits 30 s for that reply.
+        // The application's bus (EventBusAware would silently build a private one if not wired).
+        try {
+            EventBus bus = event.applicationContext.getBean(EventBus)
+            bus.subscribe('cluster.abortExecution') { Map data -> abortOnOwningPod(data) }
+            log.info("Kestrel: listening for cluster.abortExecution on ${bus.getClass().simpleName}")
+        } catch (Exception e) {
+            log.error("Kestrel: cannot listen for cluster.abortExecution; cross-pod abort will time out: ${e}", e)
+        }
         loops.scheduleWithFixedDelay(this.&abortTick, 2, 2, TimeUnit.SECONDS)
         loops.scheduleWithFixedDelay(this.&assertNoQuartzCron, 0, 5, TimeUnit.MINUTES)
     }
@@ -119,6 +132,34 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
         } catch (Throwable t) {
             log.error("Kestrel leader tick failed: ${t}", t)
         }
+    }
+
+    /**
+     * Upstream publishes {@code cluster.abortExecution} when the execution belongs to another
+     * server (OSS ships no listener). Record the request as {@code abortedby}; the owning pod's
+     * {@link #abortTick} interrupts it within ~2 seconds and the execution ends aborted.
+     *
+     * @param data executionId, user, killAsUser, uuidTarget (owning server)
+     * @return abort state merged into {@code ExecutionService.abortExecutionDirect}'s result
+     */
+    Map abortOnOwningPod(Map data) {
+        Long id = data.executionId as Long
+        String by = (data.killAsUser ?: data.user) as String
+        boolean pending = false
+        Execution.withNewTransaction {
+            Execution e = Execution.get(id)
+            if (e && !e.dateCompleted) {
+                if (!e.abortedby) {
+                    e.abortedby = by
+                    e.save(flush: true)
+                }
+                pending = true
+            }
+        }
+        log.info("Kestrel: abort of execution ${id} by ${by} for server ${data.uuidTarget}: ${pending ? 'pending' : 'not running'}")
+        pending ?
+            [abortstate: ExecutionService.ABORT_PENDING, reason: null] :
+            [abortstate: ExecutionService.ABORT_FAILED, reason: 'Execution is not running']
     }
 
     /**

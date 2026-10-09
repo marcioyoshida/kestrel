@@ -24,7 +24,7 @@ job save ──▶ leader web pod (Lease kestrel-scheduler) ──▶ CronJob pe
 | Lease election (client-go protocol), CronJob reconcile (create/replace/delete, label-scoped) | `LeaseLeaderElector`, `CronJobReconciler` |
 | Firing → at most one execution per job and minute; stale-claim takeover | `FiringCoordinator`, `DynamoFireLedger` |
 | Trigger: static Go binary, scheduled minute from the Job name | `kestrel-trigger/` |
-| Grails wiring (SchedulesManager, hand-off hook, runtime loops, abort handler) | `rundeckapp/src/main/groovy/org/rundeck/kestrel/app`, `KestrelClusterEventsService` |
+| Grails wiring (SchedulesManager, hand-off hook, runtime loops, abort handler) | `rundeckapp/src/main/groovy/org/rundeck/kestrel/app` |
 | Chart: web + runner StatefulSets, per-pod server UUID, RBAC | `deploy/helm/kestrel` |
 
 ### Exactly once
