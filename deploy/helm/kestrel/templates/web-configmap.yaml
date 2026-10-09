@@ -54,3 +54,8 @@ data:
   RUNDECK_PREAUTH_REDIRECT_LOGOUT: "true"
   RUNDECK_PREAUTH_REDIRECT_URL: "/oauth2/sign_out"
   {{- end }}
+  {{- if eq .Values.storage.mode "dynamodb" }}
+  KESTREL_STORAGE: dynamodb
+  KESTREL_DYNAMODB_PREFIX: {{ .Values.storage.dynamodb.tablePrefix | quote }}
+  KESTREL_DYNAMODB_CREATE_TABLES: {{ .Values.storage.dynamodb.createTables | quote }}
+  {{- end }}

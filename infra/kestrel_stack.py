@@ -32,6 +32,9 @@ K8S_VERSION = "1.36"
 NAMESPACE = "kestrel"
 SERVICE_ACCOUNT = "kestrel"
 RUNNER_SERVICE_ACCOUNT = "kestrel-runner"
+# ADR 0004: tables the GORM DynamoDB datastore creates on demand (`<prefix>-<entity>`, `<prefix>--index`,
+# `<prefix>--ids`). Not CloudFormation resources: teardown.sh deletes them.
+DATA_TABLE_PREFIX = "kestrel-ref"
 TRIGGER_SERVICE_ACCOUNT = "kestrel-trigger"
 PROXY_PORT = 4180  # oauth2-proxy sidecar; Rundeck itself listens on 127.0.0.1:4440 only
 # CloudFront VPC origins are unsupported in use1-az3, which is us-east-1e in this account.
@@ -195,6 +198,14 @@ class KestrelStack(Stack):
             role_arn=trigger_role.role_arn,
         )
 
+        data_tables = iam.PolicyStatement(
+            actions=["dynamodb:CreateTable", "dynamodb:DescribeTable", "dynamodb:GetItem", "dynamodb:BatchGetItem",
+                     "dynamodb:Query", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem",
+                     "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
+            resources=[f"arn:aws:dynamodb:{self.region}:{self.account}:table/{DATA_TABLE_PREFIX}-*"])
+        web_role.add_to_policy(data_tables)
+        runner_role.add_to_policy(data_tables)
+
         # ---------------------------------------------------------------- database (M0–M1 only)
         db_sg = ec2.SecurityGroup(self, "DbSg", vpc=vpc, description="Kestrel RDS", allow_all_outbound=False)
         ec2.CfnSecurityGroupIngress(
@@ -327,6 +338,7 @@ class KestrelStack(Stack):
             "FireQueueUrl": fires.queue_url,
             "FireDlqUrl": fires_dlq.queue_url,
             "FireLedgerTable": ledger.table_name,
+            "DataTablePrefix": DATA_TABLE_PREFIX,
             "DbEndpoint": db.db_instance_endpoint_address,
             "DbSecretArn": db.secret.secret_arn,
             "OidcIssuer": f"https://cognito-idp.{self.region}.amazonaws.com/{pool.user_pool_id}",

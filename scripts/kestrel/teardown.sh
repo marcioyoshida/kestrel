@@ -21,6 +21,11 @@ fi
 log "cdk destroy KestrelRef"
 (cd "$ROOT/infra" && $CDK destroy KestrelRef -c ephemeral=true --force)
 
+# Tables the GORM DynamoDB datastore created on demand (ADR 0004) are not stack resources.
+for t in $(aws dynamodb list-tables --query 'TableNames' --output text | tr '\t' '\n' | grep -E '^kestrel-ref-' || true); do
+  aws dynamodb delete-table --table-name "$t" >/dev/null && echo "deleted DynamoDB table $t"
+done
+
 left=$(aws ec2 describe-instances --filters Name=tag:eks:eks-cluster-name,Values=kestrel-ref \
   Name=instance-state-name,Values=pending,running,stopping,stopped \
   --query 'Reservations[].Instances[].InstanceId' --output text)

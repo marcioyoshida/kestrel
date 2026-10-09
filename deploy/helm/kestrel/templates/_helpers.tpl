@@ -51,6 +51,12 @@ misbehaves (double-firing schedules, logs that never reach S3, random login redi
 {{- if and (eq .Values.scheduler.mode "quartz") (gt (int .Values.web.replicas) 1) -}}
 {{- fail "web.replicas > 1 requires scheduler.mode=kubernetes. With Quartz in-JVM, OSS has no schedule takeover: replicas double-fire or orphan jobs." -}}
 {{- end -}}
+{{- if not (has .Values.storage.mode (list "rdbms" "dynamodb")) -}}
+{{- fail (printf "storage.mode must be rdbms or dynamodb, got %q" .Values.storage.mode) -}}
+{{- end -}}
+{{- if and (eq .Values.storage.mode "dynamodb") (not (regexMatch "^[a-zA-Z0-9_.-]{3,200}$" (default "" .Values.storage.dynamodb.tablePrefix))) -}}
+{{- fail "storage.dynamodb.tablePrefix is required in dynamodb mode (letters, digits, _ . -)" -}}
+{{- end -}}
 {{- if eq .Values.scheduler.mode "kubernetes" -}}
 {{- if not (hasPrefix "https://sqs." (default "" .Values.scheduler.queueUrl)) -}}
 {{- fail "scheduler.queueUrl must be the SQS FIFO fire queue URL (https://sqs.<region>.amazonaws.com/...fifo)" -}}

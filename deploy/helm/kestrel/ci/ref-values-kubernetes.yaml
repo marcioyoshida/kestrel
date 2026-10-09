@@ -11,3 +11,7 @@ web:
   serverUuid: ""
 runner:
   replicas: 1
+storage:
+  mode: dynamodb
+  dynamodb:
+    tablePrefix: kestrel-ref

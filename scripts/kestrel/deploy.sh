@@ -9,6 +9,7 @@
 #      EPHEMERAL=true|false (default true: `teardown.sh` leaves nothing behind),
 #      SCHEDULER_MODE=kubernetes|quartz (default kubernetes: CronJobs + SQS + runners, M1),
 #      WEB_REPLICAS (default 2 in kubernetes mode), RUNNER_REPLICAS (default 1),
+#      STORAGE_MODE=dynamodb|rdbms (default dynamodb, ADR 0004),
 #      SKIP_CDK=1 to reuse already-deployed stacks.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -34,6 +35,8 @@ IMAGE_REPOSITORY=${IMAGE_REPOSITORY:-$(out KestrelCi RepositoryUri)}
 IMAGE_TAG=${IMAGE_TAG:-$(git -C "$ROOT" rev-parse HEAD | cut -c1-12)}
 TRIGGER_IMAGE=${TRIGGER_IMAGE:-$(out KestrelCi TriggerRepositoryUri):$IMAGE_TAG}
 SCHEDULER_MODE=${SCHEDULER_MODE:-kubernetes}
+STORAGE_MODE=${STORAGE_MODE:-dynamodb}
+DATA_PREFIX=$(out KestrelRef DataTablePrefix)
 if [ "$SCHEDULER_MODE" = kubernetes ]; then
   WEB_REPLICAS=${WEB_REPLICAS:-2}
   RUNNER_REPLICAS=${RUNNER_REPLICAS:-1}
@@ -109,6 +112,7 @@ auth:
   existingSecret: kestrel-auth
 ingress: { enabled: false }
 targetGroupBinding: { enabled: true, targetGroupArn: $TG_ARN }
+storage: { mode: $STORAGE_MODE, dynamodb: { tablePrefix: "$DATA_PREFIX" } }
 VALUES
 
 log "helm upgrade --install ($IMAGE_REPOSITORY:$IMAGE_TAG)"
