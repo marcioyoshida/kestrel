@@ -80,7 +80,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+      # setup-gradle's wrapper validation scans every jar in the repo and rejects the stale,
+      # unpublished examples/json-plugin/wrapper/gradle-wrapper.jar that upstream ships (never run
+      # here). Verify the one wrapper this build executes against Gradle's published checksum.
+      - name: Verify Gradle wrapper
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^distributionUrl=.*gradle-\([0-9.]*\)-bin.zip$/\1/p' gradle/wrapper/gradle-wrapper.properties)
+          echo "$(curl -fsSL "https://services.gradle.org/distributions/gradle-${v}-wrapper.jar.sha256")  gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          validate-wrappers: false
       - name: Kestrel unit tests
         run: ./gradlew :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
       - name: Build war and image
