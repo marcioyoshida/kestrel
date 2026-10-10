@@ -34,9 +34,15 @@ stateful server:
   - stateless DynamoDB sessions with no ALB stickiness
     ([EKS record](validation/2026-10-10-m1-gaps-m2b-eks.md)).
 - **M2 in progress** ([ADR 0004](adr/0004-m2-dynamodb-gorm-datastore.md)): a GORM datastore on
-  DynamoDB. M2b is validated on EKS: projects, users, tokens, webhooks, plugin metadata, stored
-  events and key/config storage live in DynamoDB with `storage.mode: dynamodb`. Jobs and
-  executions (M2c) and reports (M2d) remain on RDS for now.
+  DynamoDB, enabled with `storage.mode: dynamodb`.
+  - **M2b is validated on EKS:** projects, users, tokens, webhooks, plugin metadata, stored events
+    and key/config storage.
+  - **M2c is validated on EKS** ([record](validation/2026-10-10-m2c-eks.md)): jobs, workflows,
+    options, notifications, executions, job references and reports. Results: `validate.py`
+    21/21 cold, the M2c check 25/25 twice, the M1 checks 7/7, and a 45-minute soak exactly once
+    under 9 pod kills.
+  - **Remaining (M2d):** removing RDS, Liquibase and Hibernate in Kubernetes mode; sorted indexes
+    for large tables; the upstream API functional suite.
 
 ## Build, deploy, prove, tear down
 
