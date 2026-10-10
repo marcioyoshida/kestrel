@@ -185,6 +185,19 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
     }
 
     @Override
+    Object createObjectFromNativeEntry(PersistentEntity persistentEntity, Serializable nativeKey, Map nativeEntry) {
+        def obj = super.createObjectFromNativeEntry(persistentEntity, nativeKey, nativeEntry)
+        dynamoSession.snapshot(obj)  // the loaded state, for flush-time dirty checking
+        obj
+    }
+
+    @Override
+    protected void deleteEntity(PersistentEntity persistentEntity, Object obj) {
+        dynamoSession.forget(obj)
+        super.deleteEntity(persistentEntity, obj)
+    }
+
+    @Override
     protected void deleteEntry(String family, Object key, Object entry) {
         if (entry instanceof Map) {
             nullOnlyProperties(persistentEntity).each { PersistentProperty p ->

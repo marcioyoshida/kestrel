@@ -4,6 +4,7 @@ import groovy.transform.CompileStatic
 import org.grails.datastore.mapping.config.Settings
 import org.grails.datastore.mapping.core.Session
 import org.grails.datastore.mapping.transactions.SessionHolder
+import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.grails.datastore.mapping.core.connections.ConnectionSourceSettings
 import org.grails.datastore.mapping.core.connections.ConnectionSources
@@ -111,23 +112,82 @@ class DynamoDatastore extends SimpleMapDatastore {
         }
     }
 
+    /** Resource key of the session shared by one Spring transaction; private, so GORM's own synchronization never sees it. */
+    private final Object sharedSessionKey = new Object()
+
     /**
      * Like Hibernate's datastore (and unlike GORM's generic one), open a session when none is
      * bound: Rundeck calls GORM from event threads and requests without a session binding.
-     * A session bound by this datastore's own withSession/withTransaction is reused; otherwise a
-     * plain, unbound session is returned. It is deliberately not registered with Spring
-     * transaction synchronization: Rundeck's @Transactional services run Hibernate transactions,
-     * which must not try to bind or unbind this datastore's sessions (seen live: "No value for key
-     * [DynamoDatastore] bound to thread" on rollback). Writes are written through, so an unbound
-     * session loses nothing when discarded.
+     * <ul>
+     * <li>A session bound by this datastore's own withSession/withTransaction is reused.</li>
+     * <li>Inside any other Spring transaction (Rundeck's @Transactional services run Hibernate
+     * ones), one session is shared for that transaction, as Hibernate's is, and flushed before it
+     * commits: entities changed without save() are written then, as Hibernate writes them. The
+     * session is kept under a private key with a synchronization of its own, never through GORM's
+     * session synchronization (seen live when this datastore's session was bound to Hibernate
+     * transactions: "No value for key [DynamoDatastore] bound to thread" on rollback). Saves
+     * still write through, so a rollback of that transaction does not undo them.</li>
+     * <li>Otherwise a plain, unbound session: saves write through.</li>
+     * </ul>
      */
+    /** GORM's static API asks this before {@link #getCurrentSession}; otherwise it opens and closes a session per call. */
+    @Override
+    boolean hasCurrentSession() {
+        TransactionSynchronizationManager.hasResource(this) || TransactionSynchronizationManager.isSynchronizationActive()
+    }
+
     @Override
     Session getCurrentSession() {
         def holder = TransactionSynchronizationManager.getResource(this)
         if (holder instanceof SessionHolder && ((SessionHolder) holder).session != null) {
             return ((SessionHolder) holder).session
         }
-        connect()
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return connect()
+        }
+        def shared = TransactionSynchronizationManager.getResource(sharedSessionKey)
+        if (shared instanceof Session) {
+            return (Session) shared
+        }
+        Session session = connect()
+        TransactionSynchronizationManager.bindResource(sharedSessionKey, session)
+        TransactionSynchronizationManager.registerSynchronization(new SharedSessionSynchronization(sharedSessionKey, session))
+        session
+    }
+
+    /** Flushes a transaction's shared session before commit; unbinds it around suspension and at completion. */
+    @CompileStatic
+    static class SharedSessionSynchronization implements TransactionSynchronization {
+        private final Object key
+        private final Session session
+
+        SharedSessionSynchronization(Object key, Session session) {
+            this.key = key
+            this.session = session
+        }
+
+        @Override
+        void suspend() {
+            TransactionSynchronizationManager.unbindResourceIfPossible(key)
+        }
+
+        @Override
+        void resume() {
+            TransactionSynchronizationManager.bindResource(key, session)
+        }
+
+        @Override
+        void beforeCommit(boolean readOnly) {
+            if (!readOnly) {
+                session.flush()
+            }
+        }
+
+        @Override
+        void afterCompletion(int status) {
+            // not disconnected: lazy proxies loaded through it may still be initialized after the transaction
+            TransactionSynchronizationManager.unbindResourceIfPossible(key)
+        }
     }
 
     @Override

@@ -223,13 +223,7 @@ class DynamoDatastoreSpec extends Specification {
 
     def "GORM calls inside another transaction manager's transaction do not join it"() {
         given: 'a foreign (Hibernate-like) transaction with synchronization active'
-        def tm = new org.springframework.transaction.support.AbstractPlatformTransactionManager() {
-            protected Object doGetTransaction() { new Object() }
-            protected void doBegin(Object t, org.springframework.transaction.TransactionDefinition d) {}
-            protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus s) {}
-            protected void doRollback(org.springframework.transaction.support.DefaultTransactionStatus s) {}
-        }
-        def tt = new org.springframework.transaction.support.TransactionTemplate(tm)
+        def tt = foreignTx(false)
 
         when: 'saved inside it, then the foreign transaction rolls back'
         tt.execute { status ->
@@ -240,6 +234,70 @@ class DynamoDatastoreSpec extends Specification {
         then: 'no synchronization error, and the write-through save stands (DynamoDB is not part of that transaction)'
         notThrown(Exception)
         TJob.withNewSession { TJob.findByUuid('foreign-tx')?.project } == 'ftx'
+    }
+
+    /** A transaction of another (Hibernate-like) manager, with Spring synchronization active. */
+    static org.springframework.transaction.support.TransactionTemplate foreignTx(boolean readOnly) {
+        def tm = new org.springframework.transaction.support.AbstractPlatformTransactionManager() {
+            protected Object doGetTransaction() { new Object() }
+            protected void doBegin(Object t, org.springframework.transaction.TransactionDefinition d) {}
+            protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus s) {}
+            protected void doRollback(org.springframework.transaction.support.DefaultTransactionStatus s) {}
+        }
+        def tt = new org.springframework.transaction.support.TransactionTemplate(tm)
+        tt.readOnly = readOnly
+        tt
+    }
+
+    def "a loaded entity changed without save() is written at commit, as Hibernate does; unchanged ones are not rewritten"() {
+        given:
+        def ids = TJob.withNewSession {
+            def j = new TJob(uuid: 'dirty-j', project: 'dirty', jobName: 'n').save(failOnError: true)
+            def detach = new TExec(project: 'dirty', status: 'succeeded', user: 'u', dateStarted: new Date(), job: j).save(failOnError: true)
+            def keep = new TExec(project: 'dirty', status: 'succeeded', user: 'u', dateStarted: new Date(), job: j).save(failOnError: true)
+            [j.id, detach.id, keep.id]
+        }
+        def versionOf = { id -> TExec.withNewSession { TExec.get(id).version } }
+        def keptVersion = versionOf(ids[2])
+
+        when: 'the shape of ScheduledExecutionService.deleteScheduledExecution: unlink, no save()'
+        TExec.withTransaction {
+            TExec.findAllByJob(TJob.get(ids[0])).each { if (it.id == ids[1]) it.job = null }
+        }
+
+        then:
+        TExec.withNewSession { TExec.get(ids[1]).job } == null
+        TExec.withNewSession { TExec.get(ids[2]).job?.id } == ids[0]
+        versionOf(ids[2]) == keptVersion
+    }
+
+    def "inside another manager's transaction, GORM calls share one session flushed before commit (not when read-only or rolled back)"() {
+        given:
+        def id = TJob.withNewSession { new TJob(uuid: 'shared-s', project: 'shared', jobName: 'a').save(failOnError: true).id }
+        boolean same = false
+
+        when:
+        foreignTx(false).execute { same = TJob.get(id).is(TJob.findByUuid('shared-s')); TJob.get(id).jobName = 'b' }
+        foreignTx(true).execute { TJob.get(id).jobName = 'read-only' }
+        foreignTx(false).execute { status -> TJob.get(id).jobName = 'rolled-back'; status.setRollbackOnly() }
+
+        then:
+        same
+        TJob.withNewSession { TJob.get(id).jobName } == 'b'
+        TJob.withNewSession { TJob.get(id).version } == 1
+    }
+
+    def "a deleted entity is not written back by a later flush"() {
+        given:
+        def id = TJob.withNewSession { new TJob(uuid: 'ghost', project: 'ghost', jobName: 'a').save(failOnError: true).id }
+
+        when:
+        TJob.withTransaction { def j = TJob.get(id); j.delete(); j.jobName = 'ghost-edit' }
+        foreignTx(false).execute { def j = TJob.findByUuid('ghost'); j?.delete(); if (j) j.jobName = 'again' }
+
+        then:
+        TJob.withNewSession { TJob.get(id) } == null
+        TJob.withNewSession { TJob.countByProject('ghost') } == 0
     }
 
     def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {
