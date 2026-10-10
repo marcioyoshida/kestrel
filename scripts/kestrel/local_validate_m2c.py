@@ -194,8 +194,14 @@ def run(ui, user, log_start):
     eid = json.loads(body).get("id") if s == 200 else None
     status = wait_done(api, T, eid) if eid else f"HTTP {s} {body[:120]}"
     check("executions: run with options succeeds (job reference ran the child)", status == "succeeded", f"execution {eid}: {status}")
-    s, body = call(api, f"/api/{API}/execution/{eid}/output?format=json", headers=T)
-    lines = [e.get("log", "") for e in json.loads(body).get("entries", [])] if s == 200 else []
+    lines = []
+    for _ in range(30):  # as the UI does: on another web pod the log is pending until it is fetched from S3
+        s, body = call(api, f"/api/{API}/execution/{eid}/output?format=json", headers=T)
+        out = json.loads(body) if s == 200 else {}
+        lines = [e.get("log", "") for e in out.get("entries", [])]
+        if out.get("completed"):
+            break
+        time.sleep(1)
     check("executions: output in order, option values applied", "step1 hi beta" in lines and "child-ran" in lines
           and lines.index("step4") < lines.index("step1 hi beta"), " | ".join(lines)[:160])
 

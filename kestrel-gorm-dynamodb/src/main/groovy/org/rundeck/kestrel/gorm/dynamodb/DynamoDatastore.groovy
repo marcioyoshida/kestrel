@@ -11,6 +11,7 @@ import org.grails.datastore.mapping.core.connections.ConnectionSourceSettings
 import org.grails.datastore.mapping.core.connections.ConnectionSources
 import org.grails.datastore.mapping.core.connections.ConnectionSourcesInitializer
 import org.grails.datastore.mapping.core.DatastoreUtils
+import org.grails.datastore.mapping.keyvalue.mapping.config.Family
 import org.grails.datastore.mapping.keyvalue.mapping.config.KeyValue
 import org.grails.datastore.mapping.model.PersistentEntity
 import org.grails.datastore.mapping.model.PersistentProperty
@@ -68,6 +69,9 @@ class DynamoDatastore extends SimpleMapDatastore {
         this.ids = new IdAllocator(tables, 100L)
         this.publisher = publisher
         markIndexed(indexed ?: [])
+        if (createTables) {
+            tables.ensureAll(mappingContext.persistentEntities.findAll { it.root }.collect { familyOf(it) })
+        }
         leaveSingleDatastoreLookupToOthers()
         // withTransaction takes getCurrentSession(): inside a Hibernate transaction that is the
         // transaction's shared session, so code around withTransaction sees the same instances.
@@ -86,6 +90,12 @@ class DynamoDatastore extends SimpleMapDatastore {
         def field = GormEnhancer.getDeclaredField('DATASTORES_BY_TYPE')
         field.accessible = true
         ((Map) field.get(null)).remove(this.getClass())
+    }
+
+    /** The key-value family of a root entity, as the persister names it (mapped family, else class name). */
+    private static String familyOf(PersistentEntity root) {
+        def form = root.mapping?.mappedForm
+        form instanceof Family && ((Family) form).family ? ((Family) form).family : root.javaClass.name
     }
 
     /** Convenience for tests: defaults, no extra indexes. */
