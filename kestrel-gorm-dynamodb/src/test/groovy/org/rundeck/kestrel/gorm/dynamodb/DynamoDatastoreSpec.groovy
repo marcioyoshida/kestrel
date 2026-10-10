@@ -39,7 +39,7 @@ class DynamoDatastoreSpec extends Specification {
         datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token', 'TRef.jobUuid', 'TExec.dateCompleted:null'],
             org.grails.datastore.mapping.core.DatastoreUtils.createPropertyResolver([:]),
             new org.grails.datastore.gorm.events.DefaultApplicationEventPublisher(),
-            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef)
+            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef, TOwner, TFlow)
     }
 
     def cleanupSpec() {
@@ -357,6 +357,29 @@ class DynamoDatastoreSpec extends Specification {
         notThrown(Exception)
         TJob.withNewSession { TJob.get(ids[0]) } == null
         TJob.withNewSession { TExec.get(ids[1]).job } == null
+    }
+
+    def "deleting an owner cascades to its lazily loaded child and the child's steps, without writing the child back"() {
+        given:
+        def ids = TOwner.withNewSession {
+            def f = new TFlow()
+            f.addToCommands(new TCmdStep(command: 'one'))
+            f.addToCommands(new TCmdStep(command: 'two'))
+            def o = new TOwner(name: 'owner', flow: f).save(failOnError: true, flush: true)
+            [o.id, f.id, f.commands*.id]
+        }
+
+        when:
+        foreignTx(false).execute {
+            def o = TOwner.get(ids[0])
+            TOwner.withTransaction { o.delete(flush: true) }
+        }
+
+        then:
+        notThrown(Exception)
+        TOwner.withNewSession { TOwner.get(ids[0]) } == null
+        TOwner.withNewSession { TFlow.get(ids[1]) } == null
+        TOwner.withNewSession { ids[2].collect { TStep.get(it) }.findAll() } == []
     }
 
     def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {

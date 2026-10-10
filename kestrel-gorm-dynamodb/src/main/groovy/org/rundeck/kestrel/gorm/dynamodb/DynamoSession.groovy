@@ -36,7 +36,8 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
     private WriteBatch batch
     private DynamoTransaction tx
     private final Map<Object, Map<String, Object>> snapshots = new IdentityHashMap<>()
-    private final Set<Object> deleted = Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>())
+    /** `root entity#id` of entities deleted through this session (by key: a cascade may delete through a proxy). */
+    private final Set<String> deleted = new HashSet<>()
     private static final String CLEAN = 'clean'
     private static final String DIRTY = 'dirty'
 
@@ -116,7 +117,8 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
         for (Map<Serializable, Object> cached : firstLevelCache.values()) {
             for (Object o : cached.values()) {
                 Map<String, Object> before = snapshots.get(o)
-                if (before != null && !deleted.contains(o) && !queued.contains(keyOf(o)) && before != stateOf(o)) {
+                String key = keyOf(o)
+                if (before != null && !deleted.contains(key) && !queued.contains(key) && before != stateOf(o)) {
                     changed.add(o)
                 }
             }
@@ -127,6 +129,12 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
     }
 
     private String keyOf(Object o) {
+        if (o == null) return null
+        ProxyHandler proxies = mappingContext.proxyHandler
+        if (proxies.isProxy(o)) {
+            PersistentEntity pe = mappingContext.getPersistentEntity(proxies.getProxiedClass(o).name)
+            return pe == null ? null : pe.rootEntity.name + '#' + proxies.getIdentifier(o)
+        }
         PersistentEntity e = mappingContext.getPersistentEntity(o.getClass().name)
         e == null ? null : e.rootEntity.name + '#' + createEntityAccess(e, o).identifier
     }
@@ -136,7 +144,7 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
         snapshots.clear()
         for (Map<Serializable, Object> cached : firstLevelCache.values()) {
             for (Object o : cached.values()) {
-                if (deleted.contains(o)) continue
+                if (deleted.contains(keyOf(o))) continue
                 resetCollections(o)
                 snapshot(o)
             }
@@ -162,7 +170,15 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
      */
     void forget(Object o) {
         snapshots.remove(o)
-        deleted.add(o)
+        String key = keyOf(o)
+        if (key != null) deleted.add(key)
+    }
+
+    /**
+     * @return true if this session deleted that entity (its updates are dropped, not written back)
+     */
+    boolean isDeleted(PersistentEntity e, Object id) {
+        id != null && deleted.contains(e.rootEntity.name + '#' + id)
     }
 
     /**

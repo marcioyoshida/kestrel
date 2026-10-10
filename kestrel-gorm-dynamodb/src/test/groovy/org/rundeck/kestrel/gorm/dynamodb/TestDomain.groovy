@@ -47,6 +47,7 @@ class TExec {
 @Entity
 abstract class TStep {
     String description
+    static belongsTo = [TWorkflow, TFlow]  // as WorkflowStep belongsTo [Workflow, WorkflowStep]
     static constraints = { description nullable: true }
 }
 
@@ -84,4 +85,19 @@ class TWorkflow {
 class TRef {
     String jobUuid
     TExec execution
+}
+
+/** Like ScheduledExecution -> Workflow -> steps: a to-one owned child (lazy proxy when loaded) with ordered steps. */
+@Entity
+class TOwner {
+    String name
+    TFlow flow
+}
+
+@Entity
+class TFlow {
+    String strategy = 'node-first'
+    List<TStep> commands
+    static belongsTo = [TOwner]
+    static hasMany = [commands: TStep]
 }

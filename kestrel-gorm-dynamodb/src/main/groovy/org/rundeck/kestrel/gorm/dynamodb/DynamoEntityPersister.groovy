@@ -166,6 +166,9 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
             owner.updateEntry(persistentEntity, entityAccess, key, entry)
             return
         }
+        if (dynamoSession.isDeleted(persistentEntity, key)) {
+            return  // deleted in this session (e.g. a cascade dirtied it on the way): not written back
+        }
         AttributeValue expected = null
         if (!persistentEntity.root) {
             entry[DISCRIMINATOR] = persistentEntity.discriminator
