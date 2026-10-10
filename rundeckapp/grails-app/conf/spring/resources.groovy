@@ -508,7 +508,10 @@ beans={
             sameSite = 'Lax'
             useSecureCookie = (System.getenv('RUNDECK_GRAILS_URL') ?: '').startsWith('https://')
         }
-        springHttpSessionConfiguration(org.springframework.session.config.annotation.web.http.SpringHttpSessionConfiguration)
+        springHttpSessionConfiguration(org.springframework.session.config.annotation.web.http.SpringHttpSessionConfiguration) {
+            // set explicitly: its @Autowired(required = false) setter is not applied to BeanBuilder beans (seen: cookie stayed "SESSION")
+            cookieSerializer = ref('kestrelSessionCookieSerializer')
+        }
     }
 
     // Kestrel (ADR 0001 §2): kestrel.scheduler.mode=kubernetes replaces Quartz cron triggers with
