@@ -20,6 +20,9 @@ import com.dtolabs.rundeck.app.support.DomainIndexHelper
 import org.rundeck.app.data.model.v1.logstorage.LogFileStorageRequestData
 
 class LogFileStorageRequest implements LogFileStorageRequestData{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     Execution execution
     String pluginName
     String filetype

@@ -33,10 +33,26 @@ class DynamoQuery extends Query {
     /** Plan of the last query run on this thread (tests assert that indexes are used). */
     static final ThreadLocal<String> LAST_PLAN = new ThreadLocal<>()
 
+    /** Correlated subquery context: the subquery's alias, and the outer query's row ("this."). */
+    String alias
+    DynamoQuery outerQuery
+    PersistentEntity outerEntity
+    Map outerRow
+
     DynamoQuery(DynamoSession session, PersistentEntity entity, DynamoEntityPersister persister) {
         super(session, entity)
         this.dynamoSession = session
         this.persister = persister
+    }
+
+    /** Strips this (sub)query's alias from a property path. */
+    String local(String path) {
+        alias && path?.startsWith(alias + '.') ? path.substring(alias.length() + 1) : path
+    }
+
+    /** True if the path refers to the outer query's row. */
+    boolean isOuter(String path) {
+        outerRow != null && path?.startsWith('this.')
     }
 
     @Override
@@ -55,7 +71,7 @@ class DynamoQuery extends Query {
 
     // ---------------------------------------------------------------- planning
 
-    private List<Map> candidates(PersistentEntity entity, Query.Junction criteria) {
+    List<Map> candidates(PersistentEntity entity, Query.Junction criteria) {
         List<String> how = []
         Collection ids = planIds(entity, criteria, how)
         if (ids != null) {
@@ -95,9 +111,24 @@ class DynamoQuery extends Query {
             case Query.IdEquals:
                 how << 'id'
                 return [idOf(((Query.IdEquals) c).value)]
+            case Query.IsNull:
+                def isn = (Query.IsNull) c
+                if (isOuter(isn.property)) return null
+                def np = indexedProperty(entity, isn.property)
+                if (np == null) return null
+                def nindexer = (DynamoEntityPersister.IndexTableValueIndexer) persister.getPropertyIndexer(np)
+                if (!nindexer.nullOnly) return null
+                how << "null-index:${np.name}".toString()
+                return nindexer.query(null)
+            case Query.EqualsProperty:
+                def ep = (Query.EqualsProperty) c
+                if (!isOuter(ep.otherProperty) || isOuter(ep.property)) return null
+                def outerValue = outerQuery.value(outerEntity, outerRow, ep.otherProperty.substring(5))
+                return outerValue == null ? null : planIds(entity, new Query.Equals(local(ep.property), outerValue), how)
             case Query.Equals:
                 def eq = (Query.Equals) c
-                if (eq.value == null) return null
+                if (eq.value == null || isOuter(eq.property)) return null
+                if (local(eq.property) != eq.property) return planIds(entity, new Query.Equals(local(eq.property), eq.value), how)
                 if (eq.property == idName) {
                     how << 'id'
                     return [idOf(eq.value)]
@@ -108,7 +139,8 @@ class DynamoQuery extends Query {
                 return persister.getPropertyIndexer(p).query(indexValue(p, eq.value))
             case Query.In:
                 def in = (Query.In) c
-                if (in.subquery != null || in.values == null) return null
+                if (in.subquery != null || in.values == null || isOuter(in.property)) return null
+                if (local(in.property) != in.property) return planIds(entity, new Query.In(local(in.property), in.values), how)
                 if (in.property == idName) {
                     how << 'id'
                     return in.values.collect { idOf(it) }
@@ -128,6 +160,11 @@ class DynamoQuery extends Query {
     }
 
     private PersistentProperty indexedProperty(PersistentEntity entity, String name) {
+        name = local(name)
+        if (name?.endsWith('.id')) {  // association.id: the stored foreign key, indexed as the association
+            def assoc = entity.getPropertyByName(name.substring(0, name.length() - 3))
+            if (assoc instanceof ToOne) name = assoc.name
+        }
         PersistentProperty p = entity.getPropertyByName(name)
         def form = p?.mapping?.mappedForm
         (form != null && form.respondsTo('isIndex') && form.isIndex()) ? p : null
@@ -137,7 +174,7 @@ class DynamoQuery extends Query {
         p instanceof ToOne ? idOf(value) : value
     }
 
-    private boolean belongsTo(PersistentEntity entity, Map row) {
+    boolean belongsTo(PersistentEntity entity, Map row) {
         if (entity.root) {
             return true
         }
@@ -166,9 +203,9 @@ class DynamoQuery extends Query {
             case AssociationQuery:
                 return matchesAssociation(entity, row, (AssociationQuery) c)
             case Query.Exists:
-                return !((Query.Exists) c).subquery.list().isEmpty()
+                return existsFor(entity, row, ((Query.Exists) c).subquery)
             case Query.NotExists:
-                return ((Query.NotExists) c).subquery.list().isEmpty()
+                return !existsFor(entity, row, ((Query.NotExists) c).subquery)
             case Query.IdEquals:
                 return same(row.id, idOf(((Query.IdEquals) c).value))
             case Query.PropertyComparisonCriterion:
@@ -182,7 +219,13 @@ class DynamoQuery extends Query {
     }
 
     private boolean matchesProperty(PersistentEntity entity, Map row, Query.PropertyNameCriterion c) {
-        String name = c.property
+        if (isOuter(c.property)) {
+            return outerQuery.matchesPath(outerEntity, outerRow, c, c.property.substring(5))
+        }
+        return matchesPath(entity, row, c, local(c.property))
+    }
+
+    boolean matchesPath(PersistentEntity entity, Map row, Query.PropertyNameCriterion c, String name) {
         PersistentProperty p = entity.getPropertyByName(name.tokenize('.')[0])
         if (p instanceof Association && !(p instanceof ToOne)) {
             return matchesCollection(entity, row, (Association) p, c)
@@ -218,6 +261,27 @@ class DynamoQuery extends Query {
 
     private Collection inValues(Query.In c) {
         c.subquery != null ? c.subquery.list() : (c.values ?: [])
+    }
+
+    /**
+     * EXISTS (detached criteria) evaluated per outer row: inside the subquery, "<alias>.x" is the
+     * subquery's own property and "this.x" the outer row's, as in Hibernate correlated subqueries.
+     */
+    private boolean existsFor(PersistentEntity entity, Map row, Object subquery) {
+        if (!(subquery instanceof grails.gorm.DetachedCriteria)) {
+            return !((org.grails.datastore.mapping.query.api.QueryableCriteria) subquery).list().isEmpty()
+        }
+        def dc = (grails.gorm.DetachedCriteria) subquery
+        PersistentEntity target = dc.persistentEntity
+        def targetPersister = (DynamoEntityPersister) dynamoSession.getPersister(target.javaClass)
+        def sub = new DynamoQuery(dynamoSession, target, targetPersister)
+        sub.alias = dc.alias
+        sub.outerQuery = this
+        sub.outerEntity = entity
+        sub.outerRow = row
+        def conj = new Query.Conjunction()
+        dc.criteria.each { conj.add((Query.Criterion) it) }
+        sub.candidates(target, conj).any { sub.belongsTo(target, it) && sub.matches(target, it, conj) }
     }
 
     private boolean matchesCollection(PersistentEntity entity, Map row, Association a, Query.PropertyNameCriterion c) {
@@ -261,7 +325,11 @@ class DynamoQuery extends Query {
 
     // ---------------------------------------------------------------- values
 
-    private Object value(PersistentEntity entity, Map row, String path) {
+    Object value(PersistentEntity entity, Map row, String path) {
+        if (isOuter(path)) {
+            return outerQuery.value(outerEntity, outerRow, path.substring(5))
+        }
+        path = local(path)
         List<String> parts = path.tokenize('.')
         PersistentProperty p = entity.getPropertyByName(parts[0])
         if (parts[0] == entity.identity.name) {
@@ -320,6 +388,15 @@ class DynamoQuery extends Query {
 
     private boolean compareOp(Query.PropertyComparisonCriterion c, Object a, Object b) {
         switch (c) {
+            case Query.IsNull:
+                def isn = (Query.IsNull) c
+                if (isOuter(isn.property)) return null
+                def np = indexedProperty(entity, isn.property)
+                if (np == null) return null
+                def nindexer = (DynamoEntityPersister.IndexTableValueIndexer) persister.getPropertyIndexer(np)
+                if (!nindexer.nullOnly) return null
+                how << "null-index:${np.name}".toString()
+                return nindexer.query(null)
             case Query.EqualsProperty: return same(a, b)
             case Query.NotEqualsProperty: return !same(a, b)
             case Query.GreaterThanProperty: return a != null && b != null && cmp(a, b) > 0

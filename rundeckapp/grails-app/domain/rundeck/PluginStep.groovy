@@ -22,6 +22,9 @@ import org.rundeck.core.execution.ScriptCommand
 import org.rundeck.core.execution.ScriptFileCommand
 
 class PluginStep extends WorkflowStep{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     public static final List<String> LEGACY_BUILTIN_TYPES = Collections.unmodifiableList(
         [
             ExecCommand.EXEC_COMMAND_TYPE,

@@ -24,6 +24,9 @@ import rundeck.data.validation.shared.SharedWorkflowStepConstraints
 
 @DirtyCheck
 abstract class WorkflowStep implements WorkflowStepData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     WorkflowStep errorHandler
     Boolean keepgoingOnSuccess
     String description

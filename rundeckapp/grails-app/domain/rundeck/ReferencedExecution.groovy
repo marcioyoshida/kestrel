@@ -5,6 +5,9 @@ import org.rundeck.app.data.model.v1.execution.RdReferencedExecution
 import org.rundeck.app.data.model.v1.job.JobDataSummary
 
 class ReferencedExecution implements RdReferencedExecution{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String jobUuid
     String status
     Execution execution

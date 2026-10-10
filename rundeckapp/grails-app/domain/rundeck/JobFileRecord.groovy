@@ -1,6 +1,9 @@
 package rundeck
 
 class JobFileRecord {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     /**
      * Original file name
      */

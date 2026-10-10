@@ -4789,7 +4789,7 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
         String countMethod = 'unknown'
         def startTime = System.currentTimeMillis()
         
-        if (query.shouldUseUnionQuery() || canUseSimpleCount(query)) {
+        if (!org.rundeck.kestrel.app.KestrelStorage.isDynamo() && (query.shouldUseUnionQuery() || canUseSimpleCount(query))) {  // Kestrel: HQL counts are Hibernate-only
             // Use optimized HQL count from ExecutionQuery (handles both UNION and simple cases)
             countMethod = query.shouldUseUnionQuery() ? 'UNION' : 'SIMPLE_HQL'
             total = query.countExecutions()
@@ -4838,7 +4838,7 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             ExecutionCountCacheKey.invalidate(getExecutionCountCache(), cacheKey)
             
             // Get the real count using the same logic as the main count path
-            if (query.shouldUseUnionQuery() || canUseSimpleCount(query)) {
+            if (!org.rundeck.kestrel.app.KestrelStorage.isDynamo() && (query.shouldUseUnionQuery() || canUseSimpleCount(query))) {  // Kestrel: HQL counts are Hibernate-only
                 total = query.countExecutions()
             } else {
                 total = Execution.createCriteria().count(criteriaClos.curry(true))
@@ -4978,6 +4978,9 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
      * @return result map [total: long, duration: Map[average: double, max: long, min: long]]
      */
     def queryExecutionMetrics(ExecutionQuery query) {
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            return queryExecutionMetricsPortable(query)
+        }
         if(isSqlCompatible()){
             return queryExecutionMetricsByCriteria(query)
         } else {
@@ -5285,6 +5288,24 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
     private Time epochToTime(Long epoch){
         Date date = new Date(epoch * 1000L)
         return new Time(date.getTime())
+    }
+
+    /**
+     * Kestrel (ADR 0004): metrics from plain property projections (no Hibernate result
+     * transformer or SQL), for datastores other than Hibernate.
+     */
+    private def queryExecutionMetricsPortable(ExecutionQuery query) {
+        def jobQueryComponents = applicationContext.getBeansOfType(JobQuery)
+        List rows = Execution.createCriteria().list {
+            def baseQueryCriteria = query.createCriteria(delegate, jobQueryComponents)
+            baseQueryCriteria()
+            projections {
+                property('dateStarted')
+                property('dateCompleted')
+                property('status')
+            }
+        }
+        return metricsDataFromProjectionResult(rows.collect { r -> [dateStarted: r[0], dateCompleted: r[1], status: r[2]] })
     }
 
     private def queryExecutionMetricsOnMemory(ExecutionQuery query){

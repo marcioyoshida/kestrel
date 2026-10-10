@@ -70,3 +70,18 @@ class TToken {
     String mode
     String creator
 }
+
+/** Like Rundeck's Workflow: an ordered list of steps. */
+@Entity
+class TWorkflow {
+    String strategy = 'node-first'
+    List<TStep> commands
+    static hasMany = [commands: TStep]
+}
+
+/** Like Rundeck's ReferencedExecution: a child pointing at an execution, plus a job uuid. */
+@Entity
+class TRef {
+    String jobUuid
+    TExec execution
+}

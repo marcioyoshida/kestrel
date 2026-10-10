@@ -47,6 +47,9 @@ import rundeck.data.validation.shared.SharedProjectNameConstraints
 import java.util.stream.Collectors
 
 class ScheduledExecution extends ExecutionContext implements JobData, EmbeddedJsonData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     static final String RUNBOOK_MARKER='---'
     Long id
     SortedSet<Option> options

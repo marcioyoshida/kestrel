@@ -32,6 +32,9 @@ import org.rundeck.app.data.model.v1.job.orchestrator.OrchestratorData
  * Represents a registration of a orchestrator and configuration
  */
 public class Orchestrator implements OrchestratorData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     /**
      * type is the type of orchestrator to initiate, e.g. "limitRun" 
      */

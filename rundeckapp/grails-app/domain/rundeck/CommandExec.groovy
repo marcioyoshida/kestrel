@@ -32,6 +32,9 @@ import rundeck.data.constants.WorkflowStepConstants
 */
 
 public class CommandExec extends WorkflowStep implements BaseCommandExec {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     String argString
     String adhocRemoteString
     String adhocLocalString

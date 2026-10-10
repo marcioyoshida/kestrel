@@ -33,6 +33,9 @@ import org.rundeck.app.data.model.v1.job.workflow.WorkflowStepData
  */
 
 public class Workflow implements WorkflowData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
 
     Integer threadcount=1
     Boolean keepgoing=false

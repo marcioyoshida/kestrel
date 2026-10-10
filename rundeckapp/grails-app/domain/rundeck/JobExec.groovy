@@ -29,6 +29,9 @@ import rundeck.data.constants.WorkflowStepConstants
 */
 
 public class JobExec extends WorkflowStep implements IWorkflowJobItem{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
 
     String jobName
     String jobGroup

@@ -51,6 +51,9 @@ import java.util.regex.Pattern
  */
 
 public class Option implements Comparable, OptionData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
 
     static final String DEFAULT_DELIMITER =','
 

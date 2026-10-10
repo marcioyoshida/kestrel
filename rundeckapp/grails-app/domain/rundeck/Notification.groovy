@@ -33,6 +33,9 @@ import rundeck.data.validation.shared.SharedNotificationConstraints
  * Represents a registration of notification to happen on some event trigger, and some type of notification.
  */
 public class Notification implements NotificationData {
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
     /**
      * eventTrigger is the name of the event to cause the notification, e.g. "onfailure" to happen when a
      * failure of some type occurs

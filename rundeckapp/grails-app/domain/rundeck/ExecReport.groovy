@@ -21,6 +21,9 @@ import org.rundeck.app.data.model.v1.report.RdExecReport
 
 
 class ExecReport extends BaseReport implements RdExecReport{
+    /** Kestrel (ADR 0004): DynamoDB when KESTREL_STORAGE=dynamodb (declared per class: GORM reads it without inheritance). */
+    static mapWith = org.rundeck.kestrel.app.KestrelStorage.mapWith()
+
 
     @Deprecated
     String ctxCommand

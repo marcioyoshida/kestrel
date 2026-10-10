@@ -36,10 +36,10 @@ class DynamoDatastoreSpec extends Specification {
         client = DynamoDbClient.builder().endpointOverride(URI.create(endpoint())).region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('x', 'x')))
             .httpClientBuilder(UrlConnectionHttpClient.builder()).build()
-        datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token'],
+        datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token', 'TRef.jobUuid', 'TExec.dateCompleted:null'],
             org.grails.datastore.mapping.core.DatastoreUtils.createPropertyResolver([:]),
             new org.grails.datastore.gorm.events.DefaultApplicationEventPublisher(),
-            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken)
+            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef)
     }
 
     def cleanupSpec() {
@@ -250,6 +250,87 @@ class DynamoDatastoreSpec extends Specification {
         def e = thrown(IllegalStateException)
         e.message.contains('No GORM implementations')
         TJob.withNewSession { TJob.count() } >= 0  // entity-bound lookups still work
+    }
+
+    def "an ordered list association keeps its order through saves, reorders and removals"() {
+        given:
+        def id = TWorkflow.withNewSession {
+            def w = new TWorkflow()
+            ['one', 'two', 'three'].each { w.addToCommands(new TCmdStep(command: it)) }
+            w.save(failOnError: true).id
+        }
+
+        expect:
+        TWorkflow.withNewSession { TWorkflow.get(id).commands*.command } == ['one', 'two', 'three']
+
+        when: 'reorder and remove'
+        TWorkflow.withNewSession {
+            def w = TWorkflow.get(id)
+            def two = w.commands[1]
+            w.commands.remove(two)
+            w.commands.add(0, two)
+            w.removeFromCommands(w.commands.find { it.command == 'three' })
+            w.save(failOnError: true)
+        }
+
+        then:
+        TWorkflow.withNewSession { TWorkflow.get(id).commands*.command } == ['two', 'one']
+    }
+
+    def "correlated EXISTS (ExecutionQuery's referenced-execution filter)"() {
+        given:
+        def ids = TExec.withNewSession {
+            def a = new TExec(project: 'corr-a', status: 'succeeded', user: 'u', dateStarted: new Date()).save(failOnError: true)
+            def b = new TExec(project: 'corr-b', status: 'succeeded', user: 'u', dateStarted: new Date()).save(failOnError: true)
+            def c = new TExec(project: 'corr-a', status: 'succeeded', user: 'u', dateStarted: new Date()).save(failOnError: true)
+            new TRef(jobUuid: 'J1', execution: a).save(failOnError: true)
+            new TRef(jobUuid: 'J1', execution: b).save(failOnError: true)
+            new TRef(jobUuid: 'J2', execution: c).save(failOnError: true)
+            [a.id, b.id, c.id]
+        }
+
+        when: 'executions referenced by job J1, in project corr-a or corr-b'
+        def found = TExec.withNewSession {
+            TExec.createCriteria().list {
+                'in'('project', ['corr-a', 'corr-b'])
+                exists(new grails.gorm.DetachedCriteria(TRef, 're').build {
+                    eq('re.jobUuid', 'J1')
+                    eqProperty('re.execution.id', 'this.id')
+                    'in'('this.project', ['corr-a', 'corr-b'])
+                })
+            }*.id.sort()
+        }
+        def none = TExec.withNewSession {
+            TExec.createCriteria().list {
+                eq('project', 'corr-a')
+                not { exists(new grails.gorm.DetachedCriteria(TRef, 're').build { eqProperty('re.execution.id', 'this.id') }) }
+            }*.id
+        }
+
+        then:
+        found == [ids[0], ids[1]].sort()
+        none == []
+    }
+
+    def "a null-only index finds running executions without a scan, and forgets them when they finish"() {
+        given:
+        def runningId = TExec.withNewSession {
+            new TExec(project: 'nullidx', status: 'succeeded', user: 'u', dateStarted: new Date(), dateCompleted: new Date()).save(failOnError: true)
+            new TExec(project: 'nullidx', status: 'running', user: 'u', dateStarted: new Date()).save(failOnError: true).id
+        }
+
+        when:
+        def running = TExec.withNewSession { TExec.createCriteria().list { isNull('dateCompleted'); eq('user', 'u') }*.id }
+
+        then:
+        runningId in running
+        DynamoQuery.LAST_PLAN.get() == 'null-index:dateCompleted'
+
+        when: 'it finishes'
+        TExec.withNewSession { def e = TExec.get(runningId); e.dateCompleted = new Date(); e.status = 'succeeded'; e.save(failOnError: true) }
+
+        then:
+        !(runningId in TExec.withNewSession { TExec.createCriteria().list { isNull('dateCompleted') }*.id })
     }
 
     def "unsupported criteria fail loudly instead of returning wrong rows"() {

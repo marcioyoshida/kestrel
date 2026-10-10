@@ -29,13 +29,17 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient
  *
  * <p>Indexed properties (equality queries without a table scan): every to-one association (its
  * foreign key), every property mapped with {@code index: true}, and the names passed in
- * {@code indexed} as {@code ClassSimpleName.property}.
+ * {@code indexed} as {@code ClassSimpleName.property}. {@code ClassSimpleName.property:null}
+ * keeps an entry only while the value is null: a small, sparse index for queries such as
+ * "running executions" ({@code isNull('dateCompleted')}).
  */
 @CompileStatic
 class DynamoDatastore extends SimpleMapDatastore {
     final DynamoDbClient client
     final DynamoTables tables
     final IdAllocator ids
+    /** `Entity.property` names indexed only while null (`Entity.property:null` in the index list). */
+    final Set<String> nullOnlyIndexes = new HashSet<>()
     private final ConfigurableApplicationEventPublisher publisher
 
     /**
@@ -93,9 +97,12 @@ class DynamoDatastore extends SimpleMapDatastore {
     }
 
     private void markIndexed(Collection<String> indexed) {
+        Set<String> plain = indexed.findAll { !it.endsWith(':null') } as Set
+        nullOnlyIndexes.addAll(indexed.findAll { it.endsWith(':null') }.collect { it - ':null' })
         for (PersistentEntity entity : mappingContext.persistentEntities) {
             for (PersistentProperty p : entity.persistentProperties) {
-                boolean wanted = p instanceof ToOne || indexed.contains(entity.javaClass.simpleName + '.' + p.name)
+                String name = entity.javaClass.simpleName + '.' + p.name
+                boolean wanted = p instanceof ToOne || plain.contains(name) || nullOnlyIndexes.contains(name)
                 def form = p.mapping?.mappedForm
                 if (wanted && form instanceof KeyValue) {
                     ((KeyValue) form).setIndex(true)

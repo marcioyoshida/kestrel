@@ -25,6 +25,15 @@ class KestrelStorage {
         'PluginMeta.key', 'PluginMeta.project',
         'StoredEvent.projectName', 'StoredEvent.topic',
         'Storage.dir', 'Storage.name', 'Storage.pathSha',
+        // M2c: jobs, executions, references, files, stats, reports
+        'ScheduledExecution.uuid', 'ScheduledExecution.project', 'ScheduledExecution.scheduled',
+        'Execution.uuid', 'Execution.project', 'Execution.jobUuid', 'Execution.status',
+        'Execution.dateCompleted:null',  // sparse: running executions only
+        'ReferencedExecution.jobUuid',
+        'ScheduledExecutionStats.jobUuid',
+        'JobFileRecord.jobId', 'JobFileRecord.uuid', 'JobFileRecord.project',
+        'ExecReport.executionId', 'ExecReport.executionUuid', 'ExecReport.jobId',
+        'BaseReport.ctxProject',
     ].asImmutable()
 
     /** @return true when migrated classes live in DynamoDB */

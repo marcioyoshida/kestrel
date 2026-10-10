@@ -139,6 +139,10 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         Map<String, AttributeValue> item = encodeEntry(entry)
         def key = [id: AttributeValue.fromS(ValueCodec.keyString(storeId))]
         dynamoSession.withBatch { WriteBatch b -> b.put(table, key, item, persistentEntity, storeId) }
+        // GORM skips null values when indexing an insert; seed the null-only indexes here.
+        nullOnlyProperties(persistentEntity).each { PersistentProperty p ->
+            if (entry[getPropertyKey(p)] == null) getPropertyIndexer(p).index(null, storeId)
+        }
         storeId
     }
 
@@ -172,8 +176,21 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         }
     }
 
+    /** Properties of this entity (or its ancestors) configured as `Entity.property:null`. */
+    List<PersistentProperty> nullOnlyProperties(PersistentEntity e) {
+        if (datastore.nullOnlyIndexes.isEmpty()) return []
+        e.persistentProperties.findAll { PersistentProperty p ->
+            datastore.nullOnlyIndexes.contains(p.owner.javaClass.simpleName + '.' + p.name)
+        }
+    }
+
     @Override
     protected void deleteEntry(String family, Object key, Object entry) {
+        if (entry instanceof Map) {
+            nullOnlyProperties(persistentEntity).each { PersistentProperty p ->
+                if (((Map) entry)[getPropertyKey(p)] == null) getPropertyIndexer(p).deindex(null, key)
+            }
+        }
         def itemKey = [id: AttributeValue.fromS(ValueCodec.keyString(key))]
         dynamoSession.withBatch { WriteBatch b -> b.delete(table, itemKey, persistentEntity, key) }
     }
@@ -302,16 +319,23 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
             "${persister.rootFamily}|${property.name}"
         }
 
+        static final String NULL_KEY = '\u2400null'
+
+        /** True when only null values are indexed (`Entity.property:null`). */
+        boolean isNullOnly() {
+            persister.datastore.nullOnlyIndexes.contains(property.owner.javaClass.simpleName + '.' + property.name)
+        }
+
         String keyFor(Object value) {
-            "${indexRoot}|${ValueCodec.keyString(value)}"
+            "${indexRoot}|${value == null ? NULL_KEY : ValueCodec.keyString(value)}"
         }
 
         void index(Object value, Object primaryKey) {
-            if (value != null) persister.putIndex(keyFor(value), primaryKey)
+            if (nullOnly ? value == null : value != null) persister.putIndex(keyFor(value), primaryKey)
         }
 
         void deindex(Object value, Object primaryKey) {
-            if (value != null) persister.deleteIndex(keyFor(value), primaryKey)
+            if (nullOnly ? value == null : value != null) persister.deleteIndex(keyFor(value), primaryKey)
         }
 
         List query(Object value) {
@@ -319,7 +343,7 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         }
 
         List query(Object value, int offset, int max) {
-            if (value == null) return []
+            if (nullOnly ? value != null : value == null) return []
             def ids = persister.queryIndex(keyFor(value)).collect { persister.convertId(persister.persistentEntity, it) }
             int to = max < 0 ? ids.size() : Math.min(ids.size(), offset + max)
             offset >= ids.size() ? [] : ids.subList(offset, to)
@@ -330,7 +354,12 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         }
     }
 
-    /** One-to-many / many-to-many index: k = `<owner root>#<association>#<owner id>`. */
+    /**
+     * One-to-many / many-to-many index: k = `<owner root>#<association>#<owner id>`,
+     * id = `<8-digit position>#<child id>`. Positions keep List associations (Rundeck's
+     * Workflow.commands) in order; indexing a full collection replaces what was stored, so
+     * reordered or removed children do not linger.
+     */
     static class IndexTableAssociationIndexer implements AssociationIndexer {
         final DynamoEntityPersister persister
         final Association association
@@ -352,20 +381,40 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         }
 
         void index(Object primaryKey, List foreignKeys) {
-            foreignKeys?.each { index(primaryKey, it) }
+            String k = keyFor(primaryKey)
+            persister.queryIndex(k).each { persister.deleteIndex(k, it) }
+            foreignKeys?.findAll { it != null }?.eachWithIndex { fk, int i ->
+                persister.putIndex(k, String.format('%08d#%s', i, ValueCodec.keyString(fk)))
+            }
         }
 
         void index(Object primaryKey, Object foreignKey) {
-            if (foreignKey != null) persister.putIndex(keyFor(primaryKey), foreignKey)
+            if (foreignKey == null) return
+            String k = keyFor(primaryKey)
+            List<String> entries = persister.queryIndex(k)
+            String fk = ValueCodec.keyString(foreignKey)
+            if (entries.any { childOf(it) == fk }) return
+            int next = entries ? (entries.collect { positionOf(it) }.max() + 1) : 0
+            persister.putIndex(k, String.format('%08d#%s', next, fk))
         }
 
         List query(Object primaryKey) {
             def target = association.associatedEntity
-            persister.queryIndex(keyFor(primaryKey)).collect { persister.convertId(target, it) }
+            persister.queryIndex(keyFor(primaryKey)).collect { childOf(it) }.unique().collect { persister.convertId(target, it) }
         }
 
         PersistentEntity getIndexedEntity() {
             association.associatedEntity
+        }
+
+        private static String childOf(String entry) {
+            int i = entry.indexOf('#')
+            i < 0 ? entry : entry.substring(i + 1)
+        }
+
+        private static int positionOf(String entry) {
+            int i = entry.indexOf('#')
+            i < 0 ? 0 : Integer.parseInt(entry.substring(0, i))
         }
     }
 }
