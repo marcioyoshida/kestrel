@@ -300,6 +300,38 @@ class DynamoDatastoreSpec extends Specification {
         TJob.withNewSession { TJob.countByProject('ghost') } == 0
     }
 
+    def "deleting a job with options (hasMany + belongsTo) the way deleteScheduledExecution does: #how"() {
+        given:
+        def id = TJob.withNewSession {
+            def j = new TJob(uuid: 'del-' + how, project: 'del', jobName: 'n')
+            j.addToOptions(new TOption(name: 'a'))
+            j.addToOptions(new TOption(name: 'b'))
+            j.save(failOnError: true, flush: true).id
+        }
+        // jobs whose ids equal this job's option ids: a cascade on the wrong table would delete them
+        def optionIds = TJob.withNewSession { TJob.get(id).options*.id }
+        def sameIdJobs = TJob.withNewSession {
+            optionIds.each { oid -> while (TJob.list()*.id.max() < oid) new TJob(uuid: 'pad', project: 'pad', jobName: 'p').save(failOnError: true) }
+            optionIds.findAll { TJob.get(it) != null && it != id }
+        }
+
+        when:
+        def work = {
+            def j = TJob.get(id)
+            TJob.withTransaction { j.delete(flush: true) }
+        }
+        if (how == 'in a foreign transaction') foreignTx(false).execute { work() } else work()
+
+        then:
+        TJob.withNewSession { TJob.get(id) } == null
+        TJob.withNewSession { TOption.findAllByName('a').findAll { it.job?.id == id } } == []
+        !sameIdJobs.isEmpty()
+        sameIdJobs.every { jid -> TJob.withNewSession { TJob.get(jid) } != null }
+
+        where:
+        how << ['in a foreign transaction', 'without one']
+    }
+
     def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {
         when:
         org.grails.datastore.gorm.GormEnhancer.findSingleDatastore()

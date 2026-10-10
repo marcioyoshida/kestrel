@@ -46,6 +46,15 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         (DynamoSession) session
     }
 
+    /**
+     * GORM's cascades call a persister with an associated entity (deleting a job deletes its
+     * options through the job's persister). Tables, indexes and decoding are per entity, so such
+     * calls go to that entity's own persister.
+     */
+    private DynamoEntityPersister ownerOf(PersistentEntity e) {
+        e == null || e.rootEntity == persistentEntity.rootEntity ? this : (DynamoEntityPersister) session.getPersister(e.javaClass)
+    }
+
     @Override
     Query createQuery() {
         new DynamoQuery(dynamoSession, persistentEntity, this)
@@ -55,6 +64,8 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
 
     @Override
     protected Map retrieveEntry(PersistentEntity persistentEntity, String family, Serializable key) {
+        def owner = ownerOf(persistentEntity)
+        if (!owner.is(this)) return owner.retrieveEntry(persistentEntity, family, key)
         def r = datastore.client.getItem { it.tableName(table).key([id: AttributeValue.fromS(ValueCodec.keyString(key))]).consistentRead(true) }
         r.hasItem() && r.item() ? decodeItem(r.item()) : null
     }
@@ -127,6 +138,8 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
 
     @Override
     protected Object storeEntry(PersistentEntity persistentEntity, EntityAccess entityAccess, Object storeId, Map entry) {
+        def owner = ownerOf(persistentEntity)
+        if (!owner.is(this)) return owner.storeEntry(persistentEntity, entityAccess, storeId, entry)
         if (!persistentEntity.root) {
             entry[DISCRIMINATOR] = persistentEntity.discriminator
         }
@@ -148,6 +161,11 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
 
     @Override
     protected void updateEntry(PersistentEntity persistentEntity, EntityAccess entityAccess, Object key, Map entry) {
+        def owner = ownerOf(persistentEntity)
+        if (!owner.is(this)) {
+            owner.updateEntry(persistentEntity, entityAccess, key, entry)
+            return
+        }
         AttributeValue expected = null
         if (!persistentEntity.root) {
             entry[DISCRIMINATOR] = persistentEntity.discriminator
@@ -193,6 +211,11 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
 
     @Override
     protected void deleteEntity(PersistentEntity persistentEntity, Object obj) {
+        def owner = ownerOf(persistentEntity)
+        if (!owner.is(this)) {
+            owner.deleteEntity(persistentEntity, obj)
+            return
+        }
         dynamoSession.forget(obj)
         super.deleteEntity(persistentEntity, obj)
     }

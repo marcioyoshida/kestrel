@@ -17,7 +17,9 @@ import software.amazon.awssdk.services.dynamodb.model.Update
  * The writes of one session flush, merged per item (DynamoDB rejects two operations on one item
  * in a transaction, and GORM may insert then update an entity in the same flush):
  * put+update -> put with the update applied; update+update -> one update; anything+delete ->
- * delete; delete/update+put -> put. Up to 100 items commit atomically in one TransactWriteItems;
+ * delete; delete+update -> delete (an entity deleted in this flush is not written back);
+ * delete/update+put -> put. Updates only apply to an existing item: one deleted meanwhile fails
+ * like a version conflict instead of being recreated. Up to 100 items commit atomically in one TransactWriteItems;
  * larger flushes commit in chunks of 100 (atomic per chunk only, logged).
  */
 @Slf4j
@@ -91,8 +93,7 @@ class WriteBatch {
                 next.remove.each { prev.set.remove(it); prev.remove.add(it) }
                 break  // the first update's version check is the one against stored state
             case Kind.DELETE:
-                ops.put(id, next)
-                break
+                break  // deleted in this flush: drop the update
         }
     }
 
@@ -149,11 +150,15 @@ class WriteBatch {
                 }
                 String expr = ((sets ? 'SET ' + sets.join(', ') : '') + (removes ? ' REMOVE ' + removes.join(', ') : '')).trim()
                 def u = Update.builder().tableName(op.table).key(op.key).updateExpression(expr)
+                // UpdateItem would create a missing item; never recreate one deleted by another session or pod
+                names['#key'] = op.key.keySet().first()
+                String condition = 'attribute_exists(#key)'
                 if (op.versionAttribute != null && op.expectedVersion != null) {
                     names['#ver'] = op.versionAttribute
                     values[':ver'] = op.expectedVersion
-                    u.conditionExpression('attribute_not_exists(#ver) OR #ver = :ver')
+                    condition += ' AND (attribute_not_exists(#ver) OR #ver = :ver)'
                 }
+                u.conditionExpression(condition)
                 // The SDK copies these maps, so set them only once they are complete.
                 u.expressionAttributeNames(names)
                 if (values) {

@@ -39,6 +39,7 @@ manager and connection sources.
 | Indexed properties | Every to-one association (its foreign key), anything mapped `index: true`, and properties listed in Kestrel configuration (`Entity.property`). Indexes are declared outside upstream classes. |
 | Writes | The writes of one flush are merged per item (DynamoDB allows one operation per item per transaction) and committed with `TransactWriteItems`. An item and its index entries are atomic. Flushes above 100 items commit in atomic chunks of 100, with a warning. |
 | Write-through | With no datastore transaction open, every save or delete is written immediately. Rundeck saves without flush on background threads, where no session-close flush happens. Inside `withTransaction`, writes are buffered and a rollback discards them. |
+| Sessions and dirty checking | As with Hibernate, an entity loaded and changed without `save()` is written at flush. GORM's key-value engine writes only what was saved, so the session keeps each entity's loaded state and compares it at flush. To-one associations compare by id and lazy collections by their dirty flag, so the comparison never loads anything. Inside another manager's Spring transaction (Rundeck's Hibernate `@Transactional` services), GORM calls share one session for that transaction, flushed before it commits but not when it is read-only or rolled back. The session is held under a private key with its own synchronization; binding it through GORM's session synchronization fails on rollback. Found live: job delete detaches its executions by setting `exec.scheduledExecution = null`, and without this, project delete then failed on the dangling references. |
 | Optimistic locking | `version` is a conditional update. A conflict raises GORM's `OptimisticLockingException`, which existing upstream retry handlers already catch. |
 | Queries | Planner over the top-level conjunction: id or id IN → `GetItem`/`BatchGetItem`; equality or small IN on an indexed property → index table; otherwise a paginated `Scan`. Every criterion is then evaluated in memory, so a plan only narrows the result, never changes it. Projections (including `groupProperty`), ordering, offset and max apply after filtering. Unsupported criteria (`sqlRestriction`, correlated subqueries) **throw** instead of returning wrong rows. |
 
@@ -47,7 +48,9 @@ Verified against DynamoDB Local (`DynamoDatastoreSpec`):
 - partial updates and null removal, with version conflicts;
 - ranges, `ilike`, IN, OR, ordering, paging, count, max, group-by and distinct;
 - to-one queries, one-to-many collections and association criteria;
-- inheritance, transaction rollback, and bulk `updateAll`/`deleteAll`.
+- inheritance, transaction rollback, and bulk `updateAll`/`deleteAll`;
+- ordered list associations, correlated EXISTS and null-only sparse indexes;
+- flush-time dirty checking, the shared session inside a foreign transaction, and no write-back after delete.
 
 ## Plan
 

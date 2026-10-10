@@ -3,6 +3,7 @@ package org.rundeck.kestrel.gorm.dynamodb
 import groovy.transform.CompileStatic
 import org.grails.datastore.mapping.config.Settings
 import org.grails.datastore.mapping.core.Session
+import org.grails.datastore.mapping.transactions.DatastoreTransactionManager
 import org.grails.datastore.mapping.transactions.SessionHolder
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -68,6 +69,9 @@ class DynamoDatastore extends SimpleMapDatastore {
         this.publisher = publisher
         markIndexed(indexed ?: [])
         leaveSingleDatastoreLookupToOthers()
+        // withTransaction takes getCurrentSession(): inside a Hibernate transaction that is the
+        // transaction's shared session, so code around withTransaction sees the same instances.
+        ((DatastoreTransactionManager) transactionManager).datastoreManagedSession = true
     }
 
     /**

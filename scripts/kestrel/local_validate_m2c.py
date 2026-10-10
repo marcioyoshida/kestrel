@@ -6,6 +6,10 @@ Covers the job lifecycle the API and UI use: import a job (options, notification
 steps, error handler, a job-reference step), export and compare it, reorder its steps, run it
 with options, read output, list and count executions (plain, job-scoped, running, with job
 references), execution metrics, activity history, the job/execution/activity UI pages, delete.
+
+  local_validate_m2c.py          local Kestrel (local-run.sh): form login, DynamoDB Local, /tmp/kestrel-local/rundeck.log
+  local_validate_m2c.py --eks    the reference environment (deploy.sh): Cognito sign-in through CloudFront, the
+                                 kestrel-ref-* tables, and the web/runner pod logs for the run's time window
 """
 import http.cookiejar
 import json
@@ -19,10 +23,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+EKS = "--eks" in sys.argv
 BASE = os.environ.get("KESTREL_URL", "http://127.0.0.1:4440")
 API = 60
-DDB = ["aws", "dynamodb", "--endpoint-url", "http://localhost:8000", "--region", "us-east-1", "--output", "json"]
-ENV = dict(os.environ, AWS_ACCESS_KEY_ID="local", AWS_SECRET_ACCESS_KEY="local")
+DDB = ["aws", "dynamodb", "--output", "json"] if EKS else \
+    ["aws", "dynamodb", "--endpoint-url", "http://localhost:8000", "--region", "us-east-1", "--output", "json"]
+ENV = dict(os.environ) if EKS else dict(os.environ, AWS_ACCESS_KEY_ID="local", AWS_SECRET_ACCESS_KEY="local")
+PREFIX = "kestrel-ref" if EKS else "local"
+LOG = os.environ.get("KESTREL_LOG", "/tmp/kestrel-local/rundeck.log")
+# expected: the job's notification points at a closed port; the aborted run logs its interruption
+EXPECTED_ERRORS = ("Connection refused", "Execution interrupted", "Cancellation while running", "Step 1 failed", "Error executing node step", "Execution failed:")
 RESULTS = []
 # first key of each exported step (YAML sorts keys, so a script step with an error handler starts with it)
 STEP_START = ("- exec:", "- script:", "- jobref:", "- errorhandler:")
@@ -58,13 +70,56 @@ def wait_done(api, T, eid, limit=90):
     return status
 
 
+def ddb_scan(table):
+    p = subprocess.run(DDB + ["scan", "--table-name", table], env=ENV, capture_output=True, text=True)
+    return json.loads(p.stdout)["Items"] if p.returncode == 0 else []
+
+
+def sign_in():
+    """Returns (ui opener with a signed-in session, user name, cleanup)."""
+    global BASE
+    if not EKS:
+        ui = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        call(ui, "/user/login")
+        call(ui, "/j_security_check", "POST", urllib.parse.urlencode({"j_username": "admin", "j_password": "admin"}),
+             ctype="application/x-www-form-urlencoded")
+        return ui, "admin", lambda: None
+    import validate as v
+    BASE = v.out("KestrelRef", "PublicUrl").rstrip("/")
+    pool = v.out("KestrelRef", "UserPoolId")
+    email, password = v.cognito_user(pool, "admin")
+    jar, *_ = v.sign_in(BASE, email, password)
+    cleanup = lambda: v.sh("aws", "cognito-idp", "admin-delete-user", "--user-pool-id", pool, "--username", email, check=False)
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar)), email, cleanup
+
+
+def server_errors(since):
+    """ERROR lines logged since the run started that are not expected ones."""
+    if EKS:
+        import soak
+        pods = [p for p in soak.kubectl("get", "pods", "-o", "jsonpath={range .items[*]}{.metadata.name} {end}").split()
+                if p.startswith(("kestrel-web-", "kestrel-runner-"))]
+        secs = int(time.time() - since) + 30
+        text = "\n".join(soak.kubectl("logs", p, "-c", "rundeck", f"--since={secs}s", check=False) for p in pods)
+        lines = text.splitlines()
+    else:
+        with open(LOG, errors="replace") as fh:
+            fh.seek(since)
+            lines = fh.readlines()
+    return [ln.strip()[:200] for ln in lines if " ERROR " in ln and not any(x in ln for x in EXPECTED_ERRORS)]
+
+
 def main():
-    jar = http.cookiejar.CookieJar()
-    ui = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    call(ui, "/user/login")
-    call(ui, "/j_security_check", "POST", urllib.parse.urlencode({"j_username": "admin", "j_password": "admin"}),
-         ctype="application/x-www-form-urlencoded")
-    s, body = call(ui, f"/api/{API}/tokens", "POST", json.dumps({"user": "admin", "roles": "admin", "duration": "2h"}))
+    log_start = time.time() if EKS else (os.path.getsize(LOG) if os.path.exists(LOG) else None)
+    ui, user, cleanup = sign_in()
+    try:
+        run(ui, user, log_start)
+    finally:
+        cleanup()
+
+
+def run(ui, user, log_start):
+    s, body = call(ui, f"/api/{API}/tokens", "POST", json.dumps({"user": user, "roles": "admin", "duration": "2h"}))
     token = json.loads(body).get("token") if s in (200, 201) else None
     check("setup: token", token, f"HTTP {s}")
     if not token:
@@ -188,15 +243,22 @@ def main():
               f"HTTP {s} marker={marker in body} trace={trace.group(0) if trace else None}")
 
     tables = json.loads(subprocess.run(DDB + ["list-tables"], env=ENV, capture_output=True, text=True).stdout)["TableNames"]
-    want = ["local-scheduled_execution", "local-execution", "local-workflow", "local-workflow_step", "local-option",
-            "local-notification", "local-base_report", "local-referenced_execution"]
+    want = [f"{PREFIX}-{t}" for t in ("scheduled_execution", "execution", "workflow", "workflow_step", "option",
+                                       "notification", "base_report", "referenced_execution")]
     check("dynamodb: job/execution/report tables exist", all(t in tables for t in want), f"missing {[t for t in want if t not in tables]}")
 
     s, _ = call(api, f"/api/{API}/execution/{eid}", "DELETE", headers=T)
     check("executions: delete", s == 204, f"HTTP {s}")
     s, _ = call(api, f"/api/{API}/job/{pid}", "DELETE", headers=T)
     check("jobs: delete", s == 204, f"HTTP {s}")
-    call(api, f"/api/{API}/project/{p}", "DELETE", headers=T)
+    s, _ = call(api, f"/api/{API}/project/{p}", "DELETE", headers=T)
+    left = [i["id"]["S"] for i in ddb_scan(f"{PREFIX}-execution") if i.get("project", {}).get("S") == p]
+    check("projects: delete removes the project's executions (child job, references, aborted run)", s == 204 and not left,
+          f"HTTP {s}, executions left {left}")
+
+    if log_start is not None:
+        errors = server_errors(log_start)
+        check("server log: no unexpected errors during the run", not errors, " | ".join(errors[:3]))
 
 
 if __name__ == "__main__":
