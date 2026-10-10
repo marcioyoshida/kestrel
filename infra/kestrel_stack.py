@@ -180,7 +180,7 @@ class KestrelStack(Stack):
         runner_role.assume_role_policy.add_statements(iam.PolicyStatement(
             actions=["sts:TagSession"], principals=[iam.ServicePrincipal("pods.eks.amazonaws.com")]))
         fires.grant_consume_messages(runner_role)
-        ledger.grant(runner_role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem")
+        ledger.grant(runner_role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem")
         log_bucket.grant_read_write(runner_role)
         log_bucket.grant_delete(runner_role)
         eks.CfnPodIdentityAssociation(
@@ -204,6 +204,10 @@ class KestrelStack(Stack):
                      "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
             resources=[f"arn:aws:dynamodb:{self.region}:{self.account}:table/{DATA_TABLE_PREFIX}-*"])
         web_role.add_to_policy(data_tables)
+        # Cluster bus (ACL cache invalidation across pods) lives in the fire-ledger table.
+        # ...and so do stateless HTTP sessions (session#<id> items, TTL-expired).
+        ledger.grant(web_role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem",
+                     "dynamodb:DeleteItem")
         runner_role.add_to_policy(data_tables)
 
         # ---------------------------------------------------------------- database (M0–M1 only)
@@ -247,7 +251,7 @@ class KestrelStack(Stack):
             health_check=elbv2.HealthCheck(path="/monitoring/health/readiness", healthy_http_codes="200",
                                            interval=Duration.seconds(15)),
             deregistration_delay=Duration.seconds(30),
-            stickiness_cookie_duration=Duration.hours(1),  # in-memory sessions until M1
+            # No stickiness: HTTP sessions live in DynamoDB (KESTREL_SESSIONS), any pod serves any request.
         )
         # Lets the Auto Mode controller (AmazonEKSLoadBalancingPolicy) register pod IPs.
         Tags.of(tg).add("eks:eks-cluster-name", CLUSTER_NAME)

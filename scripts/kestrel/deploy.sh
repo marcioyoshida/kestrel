@@ -99,12 +99,7 @@ database:
   url: jdbc:postgresql://$DB_HOST:5432/kestrel
   existingSecret: kestrel-db
 keyStorage: { existingSecret: kestrel-keystorage }
-logStorage: { s3: { enabled: true, bucket: $LOG_BUCKET, region: $AWS_REGION } }
-plugins:
-  - name: rundeck-s3-log-plugin-3.0.6.jar
-    url: https://github.com/rundeck-plugins/rundeck-s3-log-plugin/releases/download/3.0.6/rundeck-s3-log-plugin-3.0.6.jar
-    sha256: f28abecc4708afdf7ada3ed936d56bb9ec907be78d6337666bffa27a2e45e4ab
-    provides: org.rundeck.amazon-s3
+logStorage: { s3: { enabled: true, provider: kestrel-s3, bucket: $LOG_BUCKET, region: $AWS_REGION } }
 auth:
   enabled: true
   provider: cognito

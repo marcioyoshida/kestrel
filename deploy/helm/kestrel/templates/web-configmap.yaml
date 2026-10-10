@@ -15,6 +15,7 @@ data:
   # kubernetes mode: every pod derives its own server UUID from its StatefulSet name (see the pod command).
   RUNDECK_CLUSTERMODE_ENABLED: "true"
   KESTREL_SCHEDULER_MODE: kubernetes
+  KESTREL_SESSIONS: dynamodb   # stateless HTTP sessions (Spring Session on DynamoDB)
   KESTREL_QUEUE_URL: {{ .Values.scheduler.queueUrl | quote }}
   KESTREL_LEDGER_TABLE: {{ .Values.scheduler.ledgerTable | quote }}
   KESTREL_REGION: {{ required "scheduler.region is required" .Values.scheduler.region | quote }}
@@ -41,9 +42,15 @@ data:
   RUNDECK_CONFIG_STORAGE_CONVERTER_1_TYPE: "aes-gcm-encryption"
   RUNDECK_CONFIG_STORAGE_CONVERTER_1_PATH: "projects"
   {{- if .Values.logStorage.s3.enabled }}
-  RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_NAME: "org.rundeck.amazon-s3"
+  RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_NAME: {{ .Values.logStorage.s3.provider | quote }}
+  {{- if eq .Values.logStorage.s3.provider "kestrel-s3" }}
+  KESTREL_LOG_BUCKET: {{ required "logStorage.s3.bucket is required" .Values.logStorage.s3.bucket | quote }}
+  AWS_REGION: {{ required "logStorage.s3.region is required" .Values.logStorage.s3.region | quote }}
+  RUNDECK_EXECUTION_LOGS_FILESTORAGE_CHECKPOINT_TIME_INTERVAL: {{ .Values.logStorage.s3.checkpointInterval | quote }}
+  {{- else }}
   RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_BUCKET: {{ required "logStorage.s3.bucket is required" .Values.logStorage.s3.bucket | quote }}
   RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_S3_REGION: {{ required "logStorage.s3.region is required" .Values.logStorage.s3.region | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.auth.enabled }}
   # Only the oauth2-proxy sidecar can reach Rundeck (bound to 127.0.0.1), so its identity headers can be trusted.

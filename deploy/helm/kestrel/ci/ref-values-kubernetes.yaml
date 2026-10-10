@@ -15,3 +15,5 @@ storage:
   mode: dynamodb
   dynamodb:
     tablePrefix: kestrel-ref
+logStorage: { s3: { provider: kestrel-s3 } }
+plugins: []

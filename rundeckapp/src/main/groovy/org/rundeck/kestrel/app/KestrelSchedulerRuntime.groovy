@@ -6,12 +6,17 @@ import org.quartz.CronTrigger
 import org.quartz.Scheduler
 import org.quartz.impl.matchers.GroupMatcher
 import org.quartz.impl.matchers.NameMatcher
+import org.rundeck.app.acl.ACLCacheControl
+import org.rundeck.app.acl.AppACLContext
 import org.rundeck.kestrel.scheduler.AwsClients
+import org.rundeck.kestrel.scheduler.ClusterBus
 import org.rundeck.kestrel.scheduler.CronJobReconciler
 import org.rundeck.kestrel.scheduler.CronJobTemplate
 import org.rundeck.kestrel.scheduler.FiringCoordinator
 import org.rundeck.kestrel.scheduler.InClusterKubeApi
+import org.rundeck.kestrel.scheduler.KubeApi
 import org.rundeck.kestrel.scheduler.LeaseLeaderElector
+import org.rundeck.kestrel.scheduler.ServerIdentity
 import org.rundeck.kestrel.scheduler.SqsFireConsumer
 import org.springframework.beans.factory.DisposableBean
 import org.springframework.boot.context.event.ApplicationReadyEvent
@@ -26,6 +31,7 @@ import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -34,8 +40,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * <ul>
  *   <li>web pods: Lease election; the leader reconciles CronJobs every resync interval and on demand</li>
  *   <li>runner pods: the SQS fire-queue consumer</li>
- *   <li>every pod: the {@code cluster.abortExecution} listener, the cross-pod abort poller, and a
- *       check that Quartz holds no cron triggers</li>
+ *   <li>web leader: the orphan sweeper (executions left running by pods that no longer exist)</li>
+ *   <li>every pod: the {@code cluster.abortExecution} listener and abort poller, the ACL cache bus
+ *       ({@code cluster.clearAclCache} published and applied across pods), and a check that Quartz
+ *       holds no cron triggers</li>
  * </ul>
  */
 @Slf4j
@@ -49,6 +57,8 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
     FrameworkService frameworkService
     ScheduledExecutionService scheduledExecutionService
     Scheduler quartzScheduler
+    ACLCacheControl authorizationService
+    def executionService
 
     private final AtomicBoolean started = new AtomicBoolean()
     private final AtomicBoolean reconcileRequested = new AtomicBoolean()
@@ -58,6 +68,11 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
     private CronJobReconciler reconciler
     private SqsFireConsumer consumer
     private volatile long lastResync
+    private volatile long lastSweep
+    private KubeApi kubeApi
+    private ClusterBus aclBus
+    private final Map<String, Integer> orphanSightings = new ConcurrentHashMap<>()
+    static final long SWEEP_INTERVAL_MS = 120_000L
 
     @Override
     void onApplicationEvent(ApplicationReadyEvent event) {
@@ -65,7 +80,7 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             return
         }
         kestrelSettings.validate()
-        loops = Executors.newScheduledThreadPool(3, { Runnable r ->
+        loops = Executors.newScheduledThreadPool(4, { Runnable r ->
             def t = new Thread(r, 'kestrel-scheduler')
             t.daemon = true
             t
@@ -86,6 +101,7 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             t.start()
         } else {
             def api = InClusterKubeApi.fromEnvironment()
+            kubeApi = api
             elector = new LeaseLeaderElector(api, kestrelSettings.namespace, LEASE_NAME, kestrelSettings.podName,
                 kestrelSettings.leaseDuration, Clock.systemUTC())
             reconciler = new CronJobReconciler(api, kestrelSettings.namespace, new CronJobTemplate(
@@ -106,6 +122,20 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             log.error("Kestrel: cannot listen for cluster.abortExecution; cross-pod abort will time out: ${e}", e)
         }
         loops.scheduleWithFixedDelay(this.&abortTick, 2, 2, TimeUnit.SECONDS)
+
+        // ACL cache invalidation across pods: upstream publishes cluster.clearAclCache after a
+        // policy changes on this pod; other pods learn of it from the bus within ~3 s.
+        try {
+            aclBus = AwsClients.clusterBus(kestrelSettings.region, kestrelSettings.ledgerTable, 'acl',
+                kestrelSettings.podName ?: serverUuid)
+            aclBus.poll()  // start from now
+            EventBus bus = event.applicationContext.getBean(EventBus)
+            bus.subscribe('cluster.clearAclCache') { Map data -> publishAclChange(data) }
+            loops.scheduleWithFixedDelay(this.&aclTick, 3, 3, TimeUnit.SECONDS)
+            log.info('Kestrel: ACL cache bus active')
+        } catch (Exception e) {
+            log.error("Kestrel: ACL cache bus unavailable; other pods see ACL changes only on cache refresh: ${e}", e)
+        }
         loops.scheduleWithFixedDelay(this.&assertNoQuartzCron, 0, 5, TimeUnit.MINUTES)
     }
 
@@ -119,6 +149,14 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             boolean leader = elector.tick()
             long now = System.currentTimeMillis()
             boolean due = now - lastResync >= kestrelSettings.resyncInterval.toMillis()
+            if (leader && now - lastSweep >= SWEEP_INTERVAL_MS) {
+                lastSweep = now
+                try {
+                    sweepOrphans()
+                } catch (Throwable t) {
+                    log.warn("Kestrel orphan sweep failed: ${t.message}")
+                }
+            }
             if (leader && (due || reconcileRequested.getAndSet(false))) {
                 lastResync = now
                 Map desired = kestrelJobCatalog.desiredBuckets()
@@ -131,6 +169,63 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             }
         } catch (Throwable t) {
             log.error("Kestrel leader tick failed: ${t}", t)
+        }
+    }
+
+    /** Publishes a local ACL change for the other pods. */
+    Map publishAclChange(Map data) {
+        try {
+            long seq = aclBus.publish([path: data.path, project: data.project, system: data.system])
+            [clearCacheState: 'published', reason: "bus event ${seq}".toString()]
+        } catch (Exception e) {
+            log.warn("Kestrel: could not publish ACL change ${data}: ${e.message}")
+            [clearCacheState: 'failed', reason: e.message]
+        }
+    }
+
+    private void aclTick() {
+        try {
+            aclBus.poll().each { Map<String, String> e ->
+                if (e._reset) {
+                    log.warn("Kestrel: ACL bus ${e._reset}; cached policies refresh on their own schedule")
+                    return
+                }
+                def ctx = e.system == 'true' || !e.project ? AppACLContext.system() : AppACLContext.project(e.project)
+                authorizationService.cleanAclCache(ctx, e.path)
+                log.info("Kestrel: ACL cache invalidated for ${e.project ?: 'system'}:${e.path} (changed on another pod)")
+            }
+        } catch (Throwable t) {
+            log.warn("Kestrel ACL bus poll failed: ${t.message}")
+        }
+    }
+
+    /**
+     * Leader only: executions still running for a server UUID that no web or runner pod carries
+     * (a StatefulSet scaled down) are marked incomplete, as upstream does at boot for its own.
+     * A UUID must be absent for two consecutive sweeps, so a pod being recreated is never swept.
+     */
+    void sweepOrphans() {
+        String ns = kestrelSettings.namespace
+        def pods = kubeApi.list("/api/v1/namespaces/${ns}/pods?labelSelector=" +
+            URLEncoder.encode('app.kubernetes.io/component in (web,runner)', 'UTF-8'))
+        Set<String> live = pods.path('items').collect { ServerIdentity.uuidFor(ns, it.path('metadata').path('name').asText()) } as Set
+        List<String> owners = []
+        Execution.withNewSession {
+            owners = Execution.createCriteria().list {
+                isNull('dateCompleted')
+                isNotNull('serverNodeUUID')
+                projections { distinct('serverNodeUUID') }
+            } as List<String>
+        }
+        Set<String> gone = owners.findAll { !live.contains(it) } as Set
+        orphanSightings.keySet().retainAll(gone)
+        gone.each { String uuid ->
+            int n = orphanSightings.merge(uuid, 1) { a, b -> a + b }
+            if (n >= 2) {
+                log.warn("Kestrel: marking executions of departed server ${uuid} incomplete (no pod carries it)")
+                executionService.cleanupRunningJobs(uuid, null, new Date())
+                orphanSightings.remove(uuid)
+            }
         }
     }
 

@@ -16,6 +16,11 @@ if ! (exec 3<>/dev/tcp/127.0.0.1/8000) 2>/dev/null; then
   sleep 5
 fi
 
+# Stateless sessions and the cluster bus use a ledger-shaped table (pk S); create it locally.
+AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local aws dynamodb create-table --endpoint-url http://localhost:8000 \
+  --region us-east-1 --table-name local-ledger --billing-mode PAY_PER_REQUEST \
+  --attribute-definitions AttributeName=pk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH >/dev/null 2>&1 || true
+
 war="$BASE/rundeck-${COMMIT:0:12}.war"
 if [ ! -f "$war" ]; then
   run=$(gh run list -R marcioyoshida/kestrel --commit "$COMMIT" --json databaseId,conclusion --jq '.[] | select(.conclusion=="success") | .databaseId' | head -1)
@@ -29,6 +34,7 @@ fi
 echo "starting Kestrel ${COMMIT:0:12} (KESTREL_STORAGE=dynamodb, base $BASE/rdeck)"
 cd "$BASE"
 KESTREL_STORAGE=dynamodb KESTREL_DYNAMODB_ENDPOINT=http://localhost:8000 KESTREL_DYNAMODB_PREFIX=local \
+KESTREL_SESSIONS=dynamodb KESTREL_SESSIONS_TABLE=local-ledger \
 AWS_REGION=us-east-1 \
 nohup "$JAVA" -Xmx2g -Drdeck.base="$BASE/rdeck" -Dserver.http.port=4440 -Dserver.address=127.0.0.1 \
   -Drundeck.server.uuid=00000000-0000-4000-8000-000000000001 \

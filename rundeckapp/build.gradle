@@ -193,6 +193,8 @@ dependencies {
     // datastore it builds on.
     implementation project(path: ':kestrel-gorm-dynamodb', configuration: 'shaded')
     implementation "org.apache.grails.data:grails-data-simple:${grailsVersion}"
+    // Kestrel stateless sessions (Spring Session on DynamoDB)
+    implementation "org.springframework.session:spring-session-core:${springSessionVersion}"
     implementation project(':rundeck-storage:rundeck-storage-filesys')
     implementation project(':rundeck-app-util')
 

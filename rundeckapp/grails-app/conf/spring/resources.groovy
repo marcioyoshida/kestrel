@@ -194,6 +194,7 @@ import rundeckapp.init.RundeckExtendedMessageBundle
 import rundeckapp.init.servlet.JettyServletContainerCustomizer
 import org.rundeck.kestrel.app.GormJobCatalog
 import org.rundeck.kestrel.app.KestrelStorage
+import org.rundeck.kestrel.scheduler.AwsClients
 import org.rundeck.kestrel.gorm.dynamodb.DynamoClients
 import org.rundeck.kestrel.gorm.dynamodb.DynamoDatastore
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
@@ -492,6 +493,24 @@ beans={
         }
     }
 
+    // Kestrel (ADR 0003): KESTREL_SESSIONS=dynamodb stores HTTP sessions in DynamoDB (Spring Session),
+    // so any web pod serves any request without load-balancer stickiness.
+    if (System.getenv('KESTREL_SESSIONS') == 'dynamodb') {
+        def sessionTable = System.getenv('KESTREL_SESSIONS_TABLE') ?: System.getenv('KESTREL_LEDGER_TABLE')
+        def timeout = (System.getenv('RUNDECK_SERVER_SESSION_TIMEOUT') ?: '3600') as long
+        kestrelSessionRepository(AwsClients, System.getenv('AWS_REGION') ?: 'us-east-1', sessionTable,
+            java.time.Duration.ofSeconds(timeout)) { bean ->
+            bean.factoryMethod = 'sessionRepository'
+        }
+        kestrelSessionCookieSerializer(org.springframework.session.web.http.DefaultCookieSerializer) {
+            cookieName = 'KESTREL_SESSION'
+            cookiePath = '/'
+            sameSite = 'Lax'
+            useSecureCookie = (System.getenv('RUNDECK_GRAILS_URL') ?: '').startsWith('https://')
+        }
+        springHttpSessionConfiguration(org.springframework.session.config.annotation.web.http.SpringHttpSessionConfiguration)
+    }
+
     // Kestrel (ADR 0001 §2): kestrel.scheduler.mode=kubernetes replaces Quartz cron triggers with
     // Kubernetes CronJobs -> SQS -> runner pods. quartz (default) keeps upstream behaviour.
     def kestrel = KestrelSettings.from(grailsApplication.config)
@@ -532,6 +551,8 @@ beans={
             frameworkService = ref('frameworkService')
             scheduledExecutionService = ref('scheduledExecutionService')
             quartzScheduler = ref('quartzScheduler')
+            authorizationService = ref('authorizationService')
+            executionService = ref('executionService')
         }
     } else {
         rundeckJobScheduleManager(QuartzJobScheduleManagerService){

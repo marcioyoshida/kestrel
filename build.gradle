@@ -500,6 +500,7 @@ project(':rundeckapp') {
         project(':plugins:flow-control-plugin'),
         project(':plugins:aes-gcm-encryption-plugin'),
         project(':plugins:object-store-plugin'),
+        project(':plugins:kestrel-s3-logstore-plugin'),  // Kestrel: S3 logs with partial checkpoints
         project(':plugins:orchestrator-plugin'),
         project(':plugins:git-plugin'),
         project(':plugins:audit-logging-plugin'),

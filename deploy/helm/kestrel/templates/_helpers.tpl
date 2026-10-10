@@ -74,7 +74,10 @@ misbehaves (double-firing schedules, logs that never reach S3, random login redi
 {{- fail "runner.replicas must be at least 1 in kubernetes mode: runners execute every scheduled job" -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.logStorage.s3.enabled -}}
+{{- if and .Values.logStorage.s3.enabled (not (has .Values.logStorage.s3.provider (list "kestrel-s3" "org.rundeck.amazon-s3"))) -}}
+{{- fail "logStorage.s3.provider must be kestrel-s3 or org.rundeck.amazon-s3" -}}
+{{- end -}}
+{{- if and .Values.logStorage.s3.enabled (eq .Values.logStorage.s3.provider "org.rundeck.amazon-s3") -}}
 {{- $has := false -}}
 {{- range .Values.plugins -}}{{- if eq (default "" .provides) "org.rundeck.amazon-s3" -}}{{- $has = true -}}{{- end -}}{{- end -}}
 {{- if not $has -}}

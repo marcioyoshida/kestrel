@@ -28,6 +28,10 @@ grep -q 'name: kestrel-runner$' <<<"$kout"                       # runner Statef
 grep -q 'resources: \["cronjobs"\]' <<<"$kout"
 grep -q 'KESTREL_SCHEDULER_MODE: kubernetes' <<<"$kout"
 grep -q 'KESTREL_STORAGE: dynamodb' <<<"$kout"
+grep -q 'KESTREL_SESSIONS: dynamodb' <<<"$kout"
+grep -q 'RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_NAME: "kestrel-s3"' <<<"$kout"
+grep -q 'RUNDECK_EXECUTION_LOGS_FILESTORAGE_CHECKPOINT_TIME_INTERVAL: "5s"' <<<"$kout"
+! grep -q 'fetch-plugins' <<<"$kout"   # bundled log store: no plugin download
 grep -q 'KESTREL_DYNAMODB_PREFIX: "kestrel-ref"' <<<"$kout"
 ! grep -q 'RUNDECK_SERVER_UUID:' <<<"$kout"                      # per-pod UUIDs, never a shared one
 [ "$(grep -c 'exec docker-lib/entry.sh' <<<"$kout")" -eq 2 ]     # web + runner derive their UUID
@@ -65,6 +69,7 @@ expect_fail "k8s mode, standard queue"    "FIFO"                               -
 expect_fail "k8s mode, no ledger"         "ledgerTable"                        -f ci/ref-values-kubernetes.yaml --set scheduler.ledgerTable=
 expect_fail "k8s mode, no trigger image"  "trigger.image"                      -f ci/ref-values-kubernetes.yaml --set scheduler.trigger.image=
 expect_fail "k8s mode, zero runners"      "runner.replicas"                    -f ci/ref-values-kubernetes.yaml --set runner.replicas=0
+expect_fail "unknown log store"            "kestrel-s3 or org.rundeck.amazon-s3" --set logStorage.s3.provider=gcs
 expect_fail "unknown storage mode"         "rdbms or dynamodb"                  --set storage.mode=mongo
 expect_fail "dynamodb without prefix"     "tablePrefix is required"            --set storage.mode=dynamodb
 echo "chart checks passed"

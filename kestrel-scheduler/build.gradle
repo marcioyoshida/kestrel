@@ -25,6 +25,7 @@ dependencies {
     // Provided by rundeckapp at runtime; not bundled in the shaded jar.
     compileOnly "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
     compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+    compileOnly "org.springframework.session:spring-session-core:${springSessionVersion}"
 
     implementation platform("software.amazon.awssdk:bom:${awsSdkV2Version}")
     implementation("software.amazon.awssdk:sqs") {
@@ -41,6 +42,7 @@ dependencies {
 
     testImplementation "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
     testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    testImplementation "org.springframework.session:spring-session-core:${springSessionVersion}"
     testImplementation "org.spockframework:spock-core:${spockVersion}"
     testImplementation "org.apache.groovy:groovy-all:${groovyVersion}"
     testImplementation "org.quartz-scheduler:quartz:${quartzVersion}"  // oracle for exact-translation tests

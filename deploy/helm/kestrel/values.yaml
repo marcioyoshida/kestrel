@@ -83,8 +83,12 @@ keyStorage:
 logStorage:
   s3:
     enabled: false
+    # kestrel-s3 (bundled): partial checkpoints every checkpointInterval, so any pod can tail a
+    # running execution. org.rundeck.amazon-s3 needs the external plugin listed in `plugins`.
+    provider: kestrel-s3
     bucket: ""
     region: ""
+    checkpointInterval: 5s
 
 # Plugin jars fetched into libext/ by an init container. Each needs a pinned sha256.
 # The S3 log store (org.rundeck.amazon-s3, rundeck-plugins/rundeck-s3-log-plugin) is NOT in the
