@@ -38,6 +38,14 @@ class DynamoQuery extends Query {
     DynamoQuery outerQuery
     PersistentEntity outerEntity
     Map outerRow
+    /**
+     * While association criteria are evaluated, the row of this query's own entity: "this." in an
+     * EXISTS nested inside {@code scheduledExecution { ... }} means it (Hibernate's root alias), not
+     * the associated row (seen: ExecutionQuery's job-reference filter compared job ids with
+     * execution ids, matching only when they happened to be equal).
+     */
+    private PersistentEntity thisEntity
+    private Map thisRow
 
     DynamoQuery(DynamoSession session, PersistentEntity entity, DynamoEntityPersister persister) {
         super(session, entity)
@@ -277,8 +285,8 @@ class DynamoQuery extends Query {
         def sub = new DynamoQuery(dynamoSession, target, targetPersister)
         sub.alias = dc.alias
         sub.outerQuery = this
-        sub.outerEntity = entity
-        sub.outerRow = row
+        sub.outerEntity = thisRow != null ? thisEntity : entity
+        sub.outerRow = thisRow != null ? thisRow : row
         def conj = new Query.Conjunction()
         dc.criteria.each { conj.add((Query.Criterion) it) }
         sub.candidates(target, conj).any { sub.belongsTo(target, it) && sub.matches(target, it, conj) }
@@ -300,6 +308,22 @@ class DynamoQuery extends Query {
     }
 
     private boolean matchesAssociation(PersistentEntity entity, Map row, AssociationQuery aq) {
+        boolean outermost = thisRow == null
+        if (outermost) {
+            thisEntity = entity
+            thisRow = row
+        }
+        try {
+            return matchesAssociated(entity, row, aq)
+        } finally {
+            if (outermost) {
+                thisEntity = null
+                thisRow = null
+            }
+        }
+    }
+
+    private boolean matchesAssociated(PersistentEntity entity, Map row, AssociationQuery aq) {
         Association a = aq.association
         PersistentEntity target = a.associatedEntity
         def targetPersister = (DynamoEntityPersister) dynamoSession.getPersister(target.javaClass)

@@ -382,6 +382,39 @@ class DynamoDatastoreSpec extends Specification {
         TOwner.withNewSession { ids[2].collect { TStep.get(it) }.findAll() } == []
     }
 
+    def "an EXISTS nested in association criteria correlates with the root row (ExecutionQuery's includeJobRef shape)"() {
+        given: 'a parent job whose execution referenced a child job; job ids and execution ids kept apart'
+        def ids = TExec.withNewSession {
+            5.times { new TExec(project: 'pad', status: 's', user: 'u', dateStarted: new Date()).save(failOnError: true) }
+            def parent = new TJob(uuid: 'nest-parent', project: 'nest', jobName: 'p').save(failOnError: true)
+            def e = new TExec(project: 'nest', status: 'succeeded', user: 'u', dateStarted: new Date(), job: parent).save(failOnError: true)
+            new TRef(jobUuid: 'nest-child', execution: e).save(failOnError: true)
+            [parent.id, e.id]
+        }
+        assert ids[0] != ids[1]
+
+        when:
+        def found = TExec.withNewSession {
+            TExec.createCriteria().list {
+                isNotNull('job')
+                delegate.'job' {
+                    or {
+                        eq('uuid', 'nest-child')
+                        exists(new grails.gorm.DetachedCriteria(TRef, 're').build {
+                            projections { property 're.execution.id' }
+                            eq('re.jobUuid', 'nest-child')
+                            eqProperty('re.execution.id', 'this.id')
+                            'in'('this.project', ['nest'])
+                        })
+                    }
+                }
+            }*.id
+        }
+
+        then:
+        found == [ids[1]]
+    }
+
     def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {
         when:
         org.grails.datastore.gorm.GormEnhancer.findSingleDatastore()
