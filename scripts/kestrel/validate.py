@@ -239,10 +239,18 @@ def main():
                 break
             time.sleep(3)
         check("workflow: execution succeeded", state == "succeeded", f"execution {eid}: {state}")
-        s, _, body, _ = call(api, f"{base}/api/{API}/execution/{eid}/output?format=json", headers=hdr)
-        lines = [e.get("log", "") for e in json.loads(body).get("entries", [])]
+        # Poll like the UI: another pod may first answer "pending" while it fetches the log from S3.
+        lines, pending = [], None
+        for _ in range(10):
+            s, _, body, _ = call(api, f"{base}/api/{API}/execution/{eid}/output?format=json", headers=hdr)
+            res = json.loads(body) if s == 200 else {}
+            lines = [e.get("log", "") for e in res.get("entries", [])]
+            pending = res.get("pending") or res.get("message")
+            if lines:
+                break
+            time.sleep(3)
         check("workflow: both steps logged", any(f"marker={marker}" in l for l in lines)
-              and any(l.startswith("step 2 on") for l in lines), " | ".join(lines)[:160])
+              and any(l.startswith("step 2 on") for l in lines), " | ".join(lines)[:160] or f"no entries ({pending})")
 
         key = None
         for _ in range(30):

@@ -33,7 +33,8 @@ class KestrelS3LogStorePluginSpec extends Specification {
         runner.partialStore('rdlog', new ByteArrayInputStream('line 1\n'.bytes), 7, new Date())
         def tail = new ByteArrayOutputStream()
 
-        then: 'the web pod tails it, while the full log is not available yet'
+        then: 'the web pod sees a partial log (Rundeck checks this first) and tails it'
+        web.isPartialAvailable('rdlog')
         web.partialRetrieve('rdlog', tail)
         tail.toString() == 'line 1\n'
         !web.isAvailable('rdlog')
@@ -44,6 +45,7 @@ class KestrelS3LogStorePluginSpec extends Specification {
 
         then:
         web.isAvailable('rdlog')
+        !web.isPartialAvailable('rdlog')
         web.retrieve('rdlog', full)
         full.toString() == 'line 1\nline 2\n'
         !objects.containsKey('project/ops/7.rdlog.partial')

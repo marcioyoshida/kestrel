@@ -93,6 +93,16 @@ public class KestrelS3LogStorePlugin implements ExecutionFileStoragePlugin, Exec
         }
     }
 
+    /** Rundeck asks this before a partial retrieve of a running execution on another pod. */
+    @Override
+    public boolean isPartialAvailable(String filetype) throws ExecutionFileStorageException {
+        try {
+            return store.exists(partialKey(filetype));
+        } catch (IOException e) {
+            throw new ExecutionFileStorageException(e.getMessage(), e);
+        }
+    }
+
     @Override
     public boolean store(String filetype, InputStream stream, long length, Date lastModified) throws IOException {
         store.put(key(filetype), stream, length);

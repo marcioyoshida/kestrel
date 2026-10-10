@@ -54,6 +54,39 @@ class DynamoClusterBusSpec extends Specification {
         web0.poll()*.path == ['c.aclpolicy']
     }
 
+    def "an event numbered but not yet written is waited for, not skipped"() {
+        given:
+        def clock = new TestClock(java.time.Instant.parse('2027-01-01T00:00:00Z'))
+        def reader = new DynamoClusterBus(ddb, table, 'race', 'reader', clock)
+        reader.poll()
+        // a publisher between its counter ADD and its put
+        ddb.updateItem { it.tableName(table).key([pk: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS('bus#race#seq')])
+            .updateExpression('ADD #n :one').expressionAttributeNames(['#n': 'n'])
+            .expressionAttributeValues([':one': software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromN('1')]) }
+
+        expect: 'nothing yet, and the event is not lost'
+        reader.poll().isEmpty()
+
+        when: 'the publisher writes the event'
+        ddb.putItem { it.tableName(table).item([
+            pk: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS('bus#race#1'),
+            origin: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS('writer'),
+            data: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromM([path: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS('late.aclpolicy')])]) }
+
+        then:
+        reader.poll()*.path == ['late.aclpolicy']
+
+        when: 'a numbered event never appears'
+        ddb.updateItem { it.tableName(table).key([pk: software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS('bus#race#seq')])
+            .updateExpression('ADD #n :one').expressionAttributeNames(['#n': 'n'])
+            .expressionAttributeValues([':one': software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromN('1')]) }
+        reader.poll()
+        clock.now = clock.now.plusSeconds(31)
+
+        then: 'after the grace period the reader resets instead of stalling'
+        reader.poll()*.containsKey('_reset') == [true]
+    }
+
     def "a pod that fell far behind is told to reset"() {
         given:
         def a = new DynamoClusterBus(ddb, table, 'flood', 'a', Clock.systemUTC())

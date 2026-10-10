@@ -130,7 +130,10 @@ def main():
     if not oid:
         v.check("orphans: got a run-now execution on kestrel-web-1", False, "8 attempts landed on web-0")
         return
+    # Scale away kestrel-web-1 and kill it without grace, as a node loss would: it cannot mark its
+    # own execution, so only the leader's sweeper can.
     soak.kubectl("scale", "statefulset", "kestrel-web", "--replicas=1")
+    soak.kubectl("delete", "pod", "kestrel-web-1", "--grace-period=0", "--force", "--wait=false", check=False)
     try:
         status = None
         for _ in range(40):  # sweeps every 2 min; needs two sightings

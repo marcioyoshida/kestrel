@@ -21,6 +21,8 @@ import java.util.TreeMap;
  */
 public class DynamoClusterBus implements ClusterBus {
     static final int MAX_CATCH_UP = 500;
+    /** How long a numbered-but-unwritten event is waited for before it is declared lost. */
+    static final java.time.Duration MISSING_GRACE = java.time.Duration.ofSeconds(30);
 
     private final DynamoDbClient ddb;
     private final String table;
@@ -28,6 +30,10 @@ public class DynamoClusterBus implements ClusterBus {
     private final String origin;
     private final Clock clock;
     private long seen = -1;
+    /** Sequence numbers seen in the counter but not yet written (publish is ADD, then put). */
+    private final Map<Long, java.time.Instant> missingSince = new HashMap<>();
+    /** This pod's own events in the current window (present, but not delivered to itself). */
+    private final java.util.Set<Long> ownSeqs = new java.util.HashSet<>();
 
     /**
      * @param ddb     client
@@ -96,10 +102,11 @@ public class DynamoClusterBus implements ClusterBus {
                     final Map<String, KeysAndAttributes> r0 = req;
                     var r = ddb.batchGetItem(b -> b.requestItems(r0));
                     for (var item : r.responses().getOrDefault(table, List.of())) {
+                        long n = Long.parseLong(item.get("pk").s().substring(prefix.length()));
                         if (origin.equals(item.get("origin").s())) {
+                            ownSeqs.add(n);
                             continue;
                         }
-                        long n = Long.parseLong(item.get("pk").s().substring(prefix.length()));
                         Map<String, String> e = new HashMap<>();
                         item.get("data").m().forEach((k, v) -> e.put(k, v.s()));
                         bySeq.put(n, e);
@@ -107,8 +114,27 @@ public class DynamoClusterBus implements ClusterBus {
                     req = r.unprocessedKeys();
                 }
             }
-            out.addAll(bySeq.values());
-            seen = current;
+            // Deliver in order and advance only past events actually read: a publisher increments
+            // the counter before writing the event, so a just-numbered event may not exist yet.
+            for (long n = from; n <= current; n++) {
+                Map<String, String> e = bySeq.get(n);
+                if (e != null || ownSeqs.remove(n)) {
+                    if (e != null) {
+                        out.add(e);
+                    }
+                    missingSince.remove(n);
+                    seen = n;
+                    continue;
+                }
+                java.time.Instant first = missingSince.computeIfAbsent(n, k -> clock.instant());
+                if (clock.instant().isAfter(first.plus(MISSING_GRACE))) {
+                    missingSince.remove(n);
+                    out.add(Map.of("_reset", "event " + n + " was never written"));
+                    seen = n;
+                    continue;
+                }
+                break;  // wait for it on the next poll
+            }
             return out;
         } catch (RuntimeException e) {
             throw new IOException("cluster bus poll: " + e.getMessage(), e);
