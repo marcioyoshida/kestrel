@@ -65,14 +65,14 @@ def main():
     # ------------------------------------------------------------------ ACL bus
     name = f"kestrel-bus-{secrets.token_hex(3)}.aclpolicy"
     policy = "description: kestrel bus check\ncontext:\n  application: rundeck\nfor:\n  project:\n    - allow: read\nby:\n  group: nobody\n"
-    since = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     s, text = soak.api_call(token, base, f"/api/{API}/system/acl/{name}", "POST", json.dumps({"contents": policy}))
     v.check("acl bus: system policy saved through the API", s == 201, f"HTTP {s} {text[:100]}")
     time.sleep(12)
     pods = [p for p in soak.kubectl("get", "pods", "-o", "jsonpath={range .items[*]}{.metadata.name} {end}").split()
             if p.startswith("kestrel-web-") or p.startswith("kestrel-runner-")]
-    seen = [p for p in pods if name in soak.kubectl("logs", p, "-c", "rundeck", f"--since-time={since}", check=False)
-            and "changed on another pod" in soak.kubectl("logs", p, "-c", "rundeck", f"--since-time={since}", check=False)]
+    # relative window: this machine's clock may drift (WSL2), the pods' does not
+    logs = {p: soak.kubectl("logs", p, "-c", "rundeck", "--since=90s", check=False) for p in pods}
+    seen = [p for p, text in logs.items() if any(name in line and "changed on another pod" in line for line in text.splitlines())]
     v.check("acl bus: every other pod invalidated the policy", len(seen) == len(pods) - 1, f"{seen} of {pods}")
     soak.api_call(token, base, f"/api/{API}/system/acl/{name}", "DELETE")
 

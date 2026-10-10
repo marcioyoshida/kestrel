@@ -79,14 +79,17 @@ misfire behaviour; Quartz fires once on recovery instead.
   pod reads the database. This was found live: a project created on one pod was reported as
   missing by the other for up to two minutes.
 
-## Known gaps (tracked for later milestones)
+## Gaps closed after the first soak (2026-10-09)
 
-- The ACL cache is not invalidated across web pods (`cluster.clearAclCache` has no listener yet).
-  Policy changes reach other pods only when their cache expires.
-- Project configuration is cached per pod by `ProjectManagerService` (reloaded within about
-  1 minute when the stored config changes). A project-level schedule or execution toggle
-  reaches runners within that window.
-- Live log tail of an execution running on another pod shows output only after it completes
-  (S3 log storage). Live tail through DynamoDB is ADR 0001 §3, later.
-- Scale-down leaves executions of removed StatefulSet ordinals `running` until someone cleans
-  them up. An orphan sweeper from the leader is the fix.
+| Gap | Closed by |
+|---|---|
+| ACL cache not invalidated across pods | `ClusterBus` on DynamoDB (fire-ledger table). Kestrel answers `cluster.clearAclCache` by publishing the change; every other pod invalidates within about 3 s. Pollers advance only past events they have read: publish numbers an event before writing it, and that gap was caught live. |
+| No live tail of an execution running on another pod | Bundled `kestrel-s3-logstore-plugin` with partial store, retrieve and `isPartialAvailable`. Running logs are checkpointed every 5 s, so any pod can tail them. It replaces the downloaded upstream S3 plugin and keeps its key layout. |
+| Scale-down left executions `running` | Orphan sweeper on the leader. A server UUID that no web or runner pod carries for two sweeps (2 min apart) has its running executions marked incomplete. `ServerIdentity` derives UUIDs exactly as the chart does. |
+| ALB stickiness | Spring Session on DynamoDB (`DynamoSessionRepository`) in Kubernetes mode, and stickiness removed. Every Rundeck session attribute serializes (no warnings seen). An unchanged session writes at most once a minute. |
+
+Remaining gaps:
+
+- **24-hour soak.** For cost, validation used 45-, 20- and 15-minute soaks with frequent kills.
+- **Project configuration cache.** It is cached per pod by `ProjectManagerService` and reloads
+  within about 1 minute of a change.
