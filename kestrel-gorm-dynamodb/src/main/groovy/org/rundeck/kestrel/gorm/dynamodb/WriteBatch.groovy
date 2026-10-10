@@ -118,6 +118,9 @@ class WriteBatch {
                 List<CancellationReason> reasons = e.cancellationReasons() ?: []
                 int i = reasons.findIndexOf { it.code() == 'ConditionalCheckFailed' }
                 if (i >= 0) {
+                    Op failed = chunk[i]
+                    log.warn("Write conflict: ${failed.kind} ${failed.table} ${failed.entityKey} " +
+                        (failed.kind == Kind.UPDATE ? "(item deleted, or version not ${failed.expectedVersion?.n()})" : ''))
                     throw new OptimisticLockingException(chunk[i].entity, chunk[i].entityKey)
                 }
                 throw e

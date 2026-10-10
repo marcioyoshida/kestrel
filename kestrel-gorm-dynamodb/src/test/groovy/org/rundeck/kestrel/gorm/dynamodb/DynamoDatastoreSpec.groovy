@@ -332,6 +332,33 @@ class DynamoDatastoreSpec extends Specification {
         how << ['in a foreign transaction', 'without one']
     }
 
+    def "the full deleteScheduledExecution shape inside a service transaction: executions detached, job and options deleted, no conflict"() {
+        given:
+        def ids = TJob.withNewSession {
+            def j = new TJob(uuid: 'full-del', project: 'fdel', jobName: 'n')
+            j.addToOptions(new TOption(name: 'x'))
+            j.save(failOnError: true, flush: true)
+            def e = new TExec(project: 'fdel', status: 'succeeded', user: 'u', dateStarted: new Date(), dateCompleted: new Date(), job: j).save(failOnError: true)
+            [j.id, e.id]
+        }
+
+        when:
+        foreignTx(false).execute {
+            def se = TJob.get(ids[0])
+            TExec.withTransaction {
+                def running = TExec.createCriteria().list { delegate.'job' { eq('id', se.id) }; isNull('dateCompleted') }
+                assert !running
+                TExec.findAllByJob(se).each { it.job = null }
+                se.delete(flush: true)
+            }
+        }
+
+        then:
+        notThrown(Exception)
+        TJob.withNewSession { TJob.get(ids[0]) } == null
+        TJob.withNewSession { TExec.get(ids[1]).job } == null
+    }
+
     def "the datastore does not claim GORM's single-datastore lookup (kept for the primary datastore)"() {
         when:
         org.grails.datastore.gorm.GormEnhancer.findSingleDatastore()
