@@ -26,7 +26,17 @@ stateful server:
     (DynamoDB ledger);
   - web scales to N.
 
-  Chaos soak: 113/113 firings, no duplicates, through 9 pod kills.
+  Chaos soaks: 113/113 and 50/50 firings, no duplicates, through 9 and 7 pod kills.
+  Also in place:
+  - cross-pod ACL cache bus;
+  - live log tail across pods;
+  - orphan sweeper;
+  - stateless DynamoDB sessions with no ALB stickiness
+    ([EKS record](validation/2026-10-10-m1-gaps-m2b-eks.md)).
+- **M2 in progress** ([ADR 0004](adr/0004-m2-dynamodb-gorm-datastore.md)): a GORM datastore on
+  DynamoDB. M2b is validated on EKS: projects, users, tokens, webhooks, plugin metadata, stored
+  events and key/config storage live in DynamoDB with `storage.mode: dynamodb`. Jobs and
+  executions (M2c) and reports (M2d) remain on RDS for now.
 
 ## Build, deploy, prove, tear down
 

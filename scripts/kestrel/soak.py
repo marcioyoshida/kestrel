@@ -162,8 +162,10 @@ def main():
     time.sleep(45)  # leader reconciles on save, or within one resync
     cronjobs = json.loads(kubectl("get", "cronjobs", "-l", "kestrel.io/managed-by=kestrel", "-o", "json"))["items"]
     schedules = sorted((c["spec"]["schedule"], c["spec"].get("timeZone")) for c in cronjobs)
+    # The soak's 3 jobs need exactly 2 buckets; other projects' jobs may add their own CronJobs.
     v.check("cron: one CronJob per distinct schedule (2 jobs share a bucket)",
-            len(cronjobs) == 2 and ("0-59/2 * * * *", "America/Sao_Paulo") in schedules, f"{schedules}")
+            sum(1 for sc in schedules if sc[0] == "* * * * *") == 1 and ("0-59/2 * * * *", "America/Sao_Paulo") in schedules,
+            f"{schedules}")
 
     # ------------------------------------------------------------------ chaos window
     start = dt.datetime.now(dt.timezone.utc)
@@ -269,6 +271,7 @@ def pod_api(pod, token, method, path, body="", ctype="application/json"):
 
 def check_cross_pod_freshness(token):
     """A write on one web pod is visible at once on another that had already looked it up."""
+    kubectl("wait", "--for=condition=Ready", "pod/kestrel-web-0", "pod/kestrel-web-1", "--timeout=600s", check=False)
     name = f"fresh-{secrets.token_hex(3)}"
     miss = pod_api("kestrel-web-0", token, "GET", f"/api/{API}/project/{name}")
     made = pod_api("kestrel-web-1", token, "POST", f"/api/{API}/projects", json.dumps({"name": name}))
