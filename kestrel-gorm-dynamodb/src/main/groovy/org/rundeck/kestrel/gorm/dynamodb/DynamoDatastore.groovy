@@ -30,8 +30,8 @@ import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
-import software.amazon.awssdk.services.dynamodb.model.PutRequest
-import software.amazon.awssdk.services.dynamodb.model.WriteRequest
+import software.amazon.awssdk.services.dynamodb.model.Put
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import org.slf4j.LoggerFactory
 
 /**
@@ -205,12 +205,12 @@ class DynamoDatastore extends SimpleMapDatastore {
                 }
             }
             entries.addAll(missing.keySet().collect { String marker -> markerKey(marker) })
-            for (List<Map<String, AttributeValue>> chunk : entries.collate(25)) {
-                Map<String, List<WriteRequest>> req = [(indexTable): chunk.collect { Map<String, AttributeValue> it ->
-                    WriteRequest.builder().putRequest(PutRequest.builder().item(it).build()).build() }]
-                while (req) {
-                    def r = client.batchWriteItem { it.requestItems(req) }
-                    req = r.unprocessedItems()?.isEmpty() ? null : r.unprocessedItems()
+            // Transactions of puts, as the datastore's own writes: the pod role allows PutItem, not
+            // BatchWriteItem (seen on EKS; DynamoDB Local has no IAM).
+            for (List<Map<String, AttributeValue>> chunk : entries.collate(100)) {
+                client.transactWriteItems { b ->
+                    b.transactItems(chunk.collect { Map<String, AttributeValue> it ->
+                        TransactWriteItem.builder().put(Put.builder().tableName(indexTable).item(it).build()).build() })
                 }
             }
             LoggerFactory.getLogger(DynamoDatastore).info(
