@@ -91,6 +91,11 @@ class IsolatedRunner implements Runnable {
             log.error("Kestrel isolated: execution ${id} belongs to server ${e.serverNodeUUID}, not this Job's ${server}")
             return IsolatedRunTemplate.EXIT_EXECUTION_FAILED
         }
+        if (e.dateCompleted) {
+            // e.g. aborted while queued: upstream ends a queued execution at once
+            log.info("Kestrel isolated: execution ${id} already ended ${e.executionState}; nothing to run")
+            return e.executionState == ExecutionService.EXECUTION_SUCCEEDED ? 0 : IsolatedRunTemplate.EXIT_EXECUTION_FAILED
+        }
         if (e.status != ExecutionService.EXECUTION_QUEUED) {
             // An earlier pod of this Job started it and stopped. Upstream's boot cleanup (same
             // server UUID) marks it incomplete; never run it twice.
