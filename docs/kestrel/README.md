@@ -56,7 +56,8 @@ stateful server:
   export and import already move jobs and executions one project at a time.
 - **M3 in progress** ([ADR 0005](adr/0005-m3-github-app.md)): a GitHub App syncs job YAML from
   a repository on push and puts a "Kestrel" check run on pull requests. `local_validate_m3.py`
-  runs it against a fake GitHub (job live 6.4 s after the push). The EKS exit test needs a real
+  runs it against a fake GitHub: 27/27, job live 5.4 s after the push
+  ([record](validation/2026-10-11-m3-github-local.md)). The EKS exit test needs a real
   GitHub App. Still to do: the read-only UI for synced jobs, the headless engine and isolated
   runs, and AppCDS.
 
