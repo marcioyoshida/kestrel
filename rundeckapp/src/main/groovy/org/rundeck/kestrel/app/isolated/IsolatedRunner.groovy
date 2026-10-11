@@ -177,7 +177,9 @@ class IsolatedRunner implements Runnable {
     }
 
     private Map readSecureOptions() {
-        Path f = Path.of(IsolatedRunTemplate.SECURE_OPTIONS_DIR, IsolatedRunTemplate.SECURE_OPTIONS_FILE)
+        // KESTREL_SECURE_OPTIONS_DIR: the local test harness mounts the Secret elsewhere
+        Path f = Path.of(env.KESTREL_SECURE_OPTIONS_DIR ?: IsolatedRunTemplate.SECURE_OPTIONS_DIR,
+            IsolatedRunTemplate.SECURE_OPTIONS_FILE)
         if (!Files.exists(f)) {
             return [:]
         }
