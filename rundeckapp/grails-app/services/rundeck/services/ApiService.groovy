@@ -775,7 +775,11 @@ class ApiService implements WebUtilService{
                 def summary=execdata.summary
                 // Grails 7: Reload execution to ensure it's attached to session with valid ID
                 // Pattern #39: Direct object use caused null IDs in API responses
-                Execution e = Execution.get(execdata.execution.id)
+                // Kestrel (M2d): on DynamoDB the reload is a second read, which may see a later state
+                // than the one the status was computed from (seen: "running" with an end date), so
+                // the response renders the one object the status came from.
+                Execution e = org.rundeck.kestrel.app.KestrelStorage.isDynamo() && execdata.execution?.id != null ?
+                    execdata.execution : Execution.get(execdata.execution.id)
                 def execMap=[
                         /** attributes   **/
                         id: e.id,
