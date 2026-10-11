@@ -46,7 +46,11 @@ stateful server:
     nothing. Upstream's API suite (`kestrel-api-suite.yml`) gives the same result on DynamoDB as
     on MySQL (328 passed, 0 regressions). On EKS: `validate.py` 21/21 cold, the M2c check 25/25,
     the M1 checks 7/7, and a 30-minute soak exactly once (75/75 firings) under 6 pod kills.
-  - **Remaining:** sorted indexes for large execution and report tables.
+  - **Sorted indexes** ([record](validation/2026-10-11-m2d-sorted-indexes.md)): an ordered execution
+    or history page reads only offset + max rows, not the whole project. On EKS with 1200
+    executions, pages answer in 0.6–1.0 s and match Rundeck's order exactly; the API suite still
+    shows 0 regressions; the soak was exactly once. Totals still count every matching row, behind
+    upstream's count cache.
 
 ## Build, deploy, prove, tear down
 

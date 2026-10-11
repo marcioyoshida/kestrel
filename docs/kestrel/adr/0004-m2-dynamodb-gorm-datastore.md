@@ -1,6 +1,6 @@
 # ADR 0004: M2 DynamoDB persistence through a GORM datastore
 
-- Status: Accepted (2026-10-09). M2a is built; M2b, M2c and M2d (no RDBMS) are validated; sorted indexes remain.
+- Status: Accepted (2026-10-09). M2a is built; M2b, M2c and M2d (no RDBMS, sorted indexes) are validated.
 - Refines: ADR 0001 §4 (DynamoDB data model) and the M2 row of its milestone table.
 
 ## Context
@@ -62,7 +62,7 @@ Verified against DynamoDB Local (`DynamoDatastoreSpec`):
 | **M2a** (built) | The datastore and its spec in CI | `DynamoDatastoreSpec` green on DynamoDB Local |
 | **M2b** (validated on EKS) | Standalone aggregates on DynamoDB: `Project`, `User` + `AuthToken`, `Webhook`, `PluginMeta`, `StoredEvent`, `Storage`. Payloads above about 300 KB move to S3, because `Storage` allows 50 MB blobs and DynamoDB items cap at 400 KB. Grails wiring: datastore bean, `mapWith` switch in Kubernetes mode, IAM, CDK tables or prefix. | `validate.py` and `soak.py` green with these classes on DynamoDB |
 | **M2c** (validated on EKS, [record](../validation/2026-10-10-m2c-eks.md); sorted indexes and the upstream suite move to M2d) | The job and execution cluster: `ScheduledExecution`, `Workflow`, `WorkflowStep`, `CommandExec`, `JobExec`, `PluginStep`, `Option`, `Notification`, `Orchestrator`, `Execution`, `ReferencedExecution`, `LogFileStorageRequest`, `JobFileRecord`, `ScheduledExecutionStats`. Rewrite the Hibernate-only sites. Add sorted indexes for the high-volume paths (executions by job/project and date, running executions), so lists don't scan. | Upstream API functional tests for jobs and executions green |
-| **M2d** (validated, [record](../validation/2026-10-11-m2d-no-rdbms.md); sorted indexes remain) | No RDBMS in DynamoDB mode (see *No RDBMS* above). The remaining Hibernate-only sites reachable in that mode rewritten: job-list filters (`Restrictions`/`Subqueries`), forecast and cleanup HQL, `createAlias`, the JDBC takeover query. (Reports and execution metrics already moved in M2c, through in-memory projections.) Upstream's API suite runs in CI on DynamoDB Local and on upstream's MySQL (`kestrel-api-suite.yml`). Then sorted indexes for executions and reports. | ADR 0001's M2 exit: no API test fails on DynamoDB that passes on MySQL |
+| **M2d** (validated: [no RDBMS](../validation/2026-10-11-m2d-no-rdbms.md), [sorted indexes](../validation/2026-10-11-m2d-sorted-indexes.md)) | No RDBMS in DynamoDB mode (see *No RDBMS* above). The remaining Hibernate-only sites reachable in that mode rewritten: job-list filters (`Restrictions`/`Subqueries`), forecast and cleanup HQL, `createAlias`, the JDBC takeover query. (Reports and execution metrics already moved in M2c, through in-memory projections.) Upstream's API suite runs in CI on DynamoDB Local and on upstream's MySQL (`kestrel-api-suite.yml`). Then sorted indexes for executions and reports. | ADR 0001's M2 exit: no API test fails on DynamoDB that passes on MySQL |
 
 ## Consequences and risks
 

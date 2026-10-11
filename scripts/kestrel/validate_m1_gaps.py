@@ -146,6 +146,29 @@ def main():
                 f"execution {oid} on {target_uuid}: {status}")
     finally:
         soak.kubectl("scale", "statefulset", "kestrel-web", "--replicas=2")
+
+    # The check above races: the scale-down signals the pod, which may still finish its own
+    # execution ("failed") before the kill. This one isolates the leader's sweeper: a running
+    # execution is re-owned (in DynamoDB) by a server UUID that no pod carries.
+    s, text = soak.api_call(token, base, f"/api/{API}/project/{project}/run/command", "POST",
+                            json.dumps({"exec": "sleep 420", "project": project}))
+    sid = json.loads(text).get("execution", {}).get("id") if s == 200 else None
+    ghost = "00000000-dead-3000-8000-%012x" % secrets.randbits(48)
+    table = v.out("KestrelRef", "DataTablePrefix") + "-execution"
+    subprocess.run(["aws", "dynamodb", "update-item", "--table-name", table, "--key", json.dumps({"id": {"S": str(sid)}}),
+                    "--update-expression", "SET serverNodeUUID = :u", "--expression-attribute-values",
+                    json.dumps({":u": {"S": ghost}})], check=True, capture_output=True)
+    status = None
+    for _ in range(24):  # sweeps every 2 min and needs two sightings
+        time.sleep(15)
+        s, text = soak.api_call(token, base, f"/api/{API}/execution/{sid}")
+        info = json.loads(text) if s == 200 else {}
+        status = (info.get("status"), info.get("customStatus")) if s == 200 else status
+        if status and status[0] not in (None, "running"):
+            break
+    # Rundeck renders a cleanup status as a custom one: status "other", customStatus "incomplete"
+    v.check("orphans: the leader's sweeper marks a departed server's execution incomplete", status == ("other", "incomplete"),
+            f"execution {sid} re-owned by {ghost}: {status}")
     soak.api_call(token, base, f"/api/{API}/project/{project}", "DELETE")
 
 
