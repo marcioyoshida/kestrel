@@ -41,8 +41,12 @@ stateful server:
     options, notifications, executions, job references and reports. Results: `validate.py`
     21/21 cold, the M2c check 25/25 twice, the M1 checks 7/7, and a 45-minute soak exactly once
     under 9 pod kills.
-  - **Remaining (M2d):** removing RDS, Liquibase and Hibernate in Kubernetes mode; sorted indexes
-    for large tables; the upstream API functional suite.
+  - **M2d: no RDBMS** ([record](validation/2026-10-11-m2d-no-rdbms.md)). With
+    `storage.mode: dynamodb` there is no database server: no RDS, no Liquibase, and Hibernate maps
+    nothing. Upstream's API suite (`kestrel-api-suite.yml`) gives the same result on DynamoDB as
+    on MySQL (328 passed, 0 regressions). On EKS: `validate.py` 21/21 cold, the M2c check 25/25,
+    the M1 checks 7/7, and a 30-minute soak exactly once (75/75 firings) under 6 pod kills.
+  - **Remaining:** sorted indexes for large execution and report tables.
 
 ## Build, deploy, prove, tear down
 
