@@ -58,8 +58,8 @@ stateful server:
   a repository on push and puts a "Kestrel" check run on pull requests. `local_validate_m3.py`
   runs it against a fake GitHub: 27/27, job live 5.4 s after the push
   ([record](validation/2026-10-11-m3-github-local.md)). The EKS exit test needs a real
-  GitHub App. Still to do: the read-only UI for synced jobs, the headless engine and isolated
-  runs, and AppCDS.
+  GitHub App. Synced jobs are read-only outside GitHub; Edit opens the file in GitHub (35/35).
+  Still to do: the headless engine and isolated runs, and AppCDS.
 
 ## Build, deploy, prove, tear down
 

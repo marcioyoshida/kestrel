@@ -21,6 +21,19 @@
 | A second repository claims a synced uuid | 422 `job … is synced from acme/jobs-…`. The job is untouched |
 | Run the synced job | Succeeded with the merged version's command |
 
+**Read-only synced jobs: 35/35**, run later on Kestrel `628656612a1a` with the same script, which
+now has 8 more checks:
+
+| Attempt | Result |
+|---|---|
+| API job import (`dupeOption=update`) over a synced uuid | Listed under `failed`: "Job … is synced from GitHub (…); change it there: <edit URL>". Job unchanged |
+| API `DELETE /job/<uuid>` | 409, same message |
+| UI `/project/<p>/job/edit/<uuid>` | 302 to GitHub's editor for the file on `main` |
+| Job page | A line linking the file, the commit, a read-only note and an Edit in GitHub button (checked in a headless browser) |
+| Action menu (job page and job list) | "Edit in GitHub", no Delete |
+| API schedule disable/enable | 200: operational toggles are still allowed |
+| Merge that updates the job (push 2) | Still syncs: the sync is exempt |
+
 ## Found and fixed during the check
 
 - **A pull-request check reported a job without a uuid twice.** Both the file parser and the
