@@ -464,6 +464,11 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
             "${persister.rootFamily}#${association.name}#${ValueCodec.keyString(owner)}"
         }
 
+        /** List associations keep positions (Workflow.commands); sets and bags do not. */
+        boolean isOrdered() {
+            List.isAssignableFrom(association.type)
+        }
+
         boolean doesReturnKeys() {
             true
         }
@@ -482,6 +487,12 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         void index(Object primaryKey, Object foreignKey) {
             if (foreignKey == null) return
             String k = keyFor(primaryKey)
+            if (!ordered) {
+                // A set has no positions: one idempotent put, no read. Reading the partition first
+                // made every execution insert read all of its job's executions (O(n) per run).
+                persister.putIndex(k, String.format('%08d#%s', 0, ValueCodec.keyString(foreignKey)))
+                return
+            }
             List<String> entries = persister.queryIndex(k)
             String fk = ValueCodec.keyString(foreignKey)
             if (entries.any { childOf(it) == fk }) return
