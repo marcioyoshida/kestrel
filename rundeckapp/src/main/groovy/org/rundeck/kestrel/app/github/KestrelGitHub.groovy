@@ -3,9 +3,12 @@ package org.rundeck.kestrel.app.github
 import groovy.transform.CompileStatic
 import org.rundeck.kestrel.github.GitHubAppKey
 import org.rundeck.kestrel.github.GitHubClient
+import org.rundeck.kestrel.github.GitHubLinks
 import org.rundeck.kestrel.github.GitHubSync
 import org.rundeck.kestrel.github.WebhookSignature
+import org.springframework.context.ApplicationContext
 import org.springframework.core.env.PropertyResolver
+import rundeck.ScheduledExecution
 
 import java.time.Clock
 
@@ -29,6 +32,8 @@ class KestrelGitHub {
     String user
     List<String> roles
     GitHubSync sync
+    GitHubLinks links
+    RundeckJobTarget target
 
     static boolean enabled(PropertyResolver config) {
         prop(config, 'kestrel.github.app-id', null) != null
@@ -51,12 +56,48 @@ class KestrelGitHub {
             throw new IllegalStateException("Kestrel GitHub App ${g.appId} is configured without: ${missing.join(', ')}")
         }
         String pem = prop(config, 'kestrel.github.private-key', null).replace('\\n', '\n')
-        def client = new GitHubClient(prop(config, 'kestrel.github.api-url', 'https://api.github.com'),
-            new GitHubAppKey(g.appId, pem), Clock.systemUTC())
+        String apiUrl = prop(config, 'kestrel.github.api-url', 'https://api.github.com')
+        def client = new GitHubClient(apiUrl, new GitHubAppKey(g.appId, pem), Clock.systemUTC())
         target.user = g.user
         target.roles = g.roles
+        g.target = target
+        g.links = new GitHubLinks(apiUrl)
         g.sync = new GitHubSync(client, target)
         g
+    }
+
+    /**
+     * @return where the job is synced from ({@code repo, branch, path, commit, editUrl, viewUrl}), or
+     * null if it is not, or the integration is off (then synced jobs are ordinary jobs again)
+     */
+    static Map source(ApplicationContext ctx, ScheduledExecution job) {
+        if (!job?.uuid || !ctx?.containsBean('kestrelGitHub')) {
+            return null
+        }
+        ctx.getBean('kestrelGitHub', KestrelGitHub).source(job)
+    }
+
+    Map source(ScheduledExecution job) {
+        Map m = target.source(job)
+        if (!m) {
+            return null
+        }
+        String repo = m.repo as String, path = m.path as String, branch = m.branch as String, commit = m.commit as String
+        m + [editUrl: branch ? links.edit(repo, branch, path) : links.blob(repo, commit, path),
+             viewUrl: links.blob(repo, commit, path)]
+    }
+
+    /**
+     * Synced jobs change only through GitHub: any other update or delete is refused with this
+     * message. Null when the change may go ahead.
+     * @param method the change's method ({@code changeinfo.method} / {@code callingAction})
+     */
+    static String readOnly(ApplicationContext ctx, ScheduledExecution job, String method) {
+        if (method == RundeckJobTarget.META) {
+            return null
+        }
+        Map m = source(ctx, job)
+        m ? "Job ${job.extid} is synced from GitHub (${m.repo}: ${m.path}); change it there: ${m.editUrl}".toString() : null
     }
 
     boolean verify(byte[] body, String signature) {

@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -308,6 +309,31 @@ def main():
     check("push 2: removed file's job deleted", get_job(u_b) is None and get_job(u_c) is not None)
     check("push 2: merge -> job live < 60 s", live < 60, f"{live:.1f}s")
 
+    # synced jobs are read-only outside GitHub (push 2 above shows the sync itself may still update them)
+    edit_url = f"http://127.0.0.1:{PORT}/{repo}/edit/main/jobs/a/hello.yaml"
+    s, out = call(api, f"/api/{API}/project/{p1}/jobs/import?fileformat=yaml&dupeOption=update&uuidOption=preserve", "POST",
+                  job(u_hello, "hello", "echo edited-by-api"), headers=T, ctype="application/yaml")
+    failed = json.loads(out).get("failed", []) if s == 200 else []
+    check("read-only: API import over a synced job refused", failed and "synced from GitHub" in str(failed[0].get("error")),
+          f"HTTP {s} {out[:300]}")
+    s, out = call(api, f"/api/{API}/job/{u_hello}", "DELETE", headers=T)
+    check("read-only: API delete refused (409)", s == 409 and "synced from GitHub" in out, f"HTTP {s} {out[:200]}")
+    check("read-only: job unchanged", "echo hello-v2" in export(api, T, u_hello))
+    noredirect = urllib.request.build_opener(NoRedirect, *[h for h in ui.handlers if isinstance(h, urllib.request.HTTPCookieProcessor)])
+    s, _, loc = get_raw(noredirect, f"/project/{p1}/job/edit/{u_hello}")
+    check("read-only: UI edit goes to GitHub's editor", s == 302 and loc == edit_url, f"HTTP {s} {loc}")
+    s, page, _ = get_raw(noredirect, f"/project/{p1}/job/show/{u_hello}")
+    check("read-only: job page banner links the file", s == 200 and 'id="kestrel-github-source"' in page and edit_url in page,
+          f"HTTP {s}")
+    s, menu, _ = get_raw(noredirect, f"/scheduledExecution/actionMenuFragment?id={u_hello}&project={p1}")
+    check("read-only: action menu offers Edit in GitHub, no delete", s == 200 and "Edit in GitHub" in menu
+          and "job_delete_single" not in menu, f"HTTP {s}")
+    s, menu, _ = get_raw(noredirect, f"/scheduledExecution/actionMenuFragment?id={u_c}&project={p2}")
+    check("read-only: other synced job menu also", s == 200 and "Edit in GitHub" in menu, f"HTTP {s}")
+    s, out = call(api, f"/api/{API}/job/{u_hello}/schedule/disable", "POST", headers=T)
+    s2, _ = call(api, f"/api/{API}/job/{u_hello}/schedule/enable", "POST", headers=T)
+    check("read-only: schedule toggles still allowed (operational)", s == 200 and s2 == 200, f"HTTP {s} {s2} {out[:120]}")
+
     # a second repository may not take over a job synced from acme/jobs
     fake.commit(other, "main", {"kestrel.yaml": f"projects:\n- path: ''\n  project: {p1}\n",
                                         "steal.yaml": job(u_hello, "hello", "echo stolen")})
@@ -330,6 +356,19 @@ def main():
     failed = [n for n, ok in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} passed")
     sys.exit(1 if failed else 0)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def get_raw(opener, path):
+    try:
+        with opener.open(urllib.request.Request(BASE + path), timeout=60) as r:
+            return r.status, r.read().decode(errors="replace"), r.headers.get("Location")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace"), e.headers.get("Location")
 
 
 def export(api, T, uuid):

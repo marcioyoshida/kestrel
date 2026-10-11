@@ -27,7 +27,19 @@
 <g:set var="authJobDelete" value="${auth.resourceAllowedTest(kind: AuthConstants.TYPE_JOB, action: AuthConstants.ACTION_DELETE, project: scheduledExecution.project)}"/>
 
 <g:set var="renderedActions" value="${0}"/>
-<g:if test="${authUpdate}">
+%{-- a job synced from GitHub is edited there, and deleted by removing it from its file (ADR 0005) --}%
+<g:set var="kestrelGitHubSource" value="${org.rundeck.kestrel.app.github.KestrelGitHub.source(grailsApplication.mainContext, scheduledExecution)}"/>
+<g:if test="${authUpdate && kestrelGitHubSource}">
+    %{renderedActions++}%
+    <li>
+        <a href="${enc(attr: kestrelGitHubSource.editUrl)}" target="_blank" rel="noopener noreferrer"
+           title="${enc(attr: kestrelGitHubSource.repo + ': ' + kestrelGitHubSource.path)}">
+            <i class="glyphicon glyphicon-edit"></i>
+            <g:message code="kestrel.github.edit" default="Edit in GitHub"/>
+        </a>
+    </li>
+</g:if>
+<g:elseif test="${authUpdate}">
     %{renderedActions++}%
     <li>
         <g:link controller="scheduledExecution"
@@ -39,7 +51,7 @@
             <g:message code="scheduledExecution.action.edit.button.label"/>
         </g:link>
     </li>
-</g:if>
+</g:elseif>
 <g:if test="${authRead && authJobCreate}">
     %{renderedActions++}%
     <li>
@@ -71,7 +83,7 @@
     </li>
 </g:if>
 
-<g:unless test="${hideJobDelete}">
+<g:unless test="${hideJobDelete || kestrelGitHubSource}">
     <g:if test="${authJobDelete && authDelete}">
         <g:if test="${authUpdate || authRead&&authJobCreate}">
             <li class="divider"></li>

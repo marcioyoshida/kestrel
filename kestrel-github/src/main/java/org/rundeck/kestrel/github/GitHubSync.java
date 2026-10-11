@@ -120,7 +120,7 @@ public class GitHubSync {
         }
         List<GitHubClient.Annotation> problems = new ArrayList<>();
         Set<String> kept = new LinkedHashSet<>();
-        List<String> upserted = apply(inst, repo, head, upserts, kept, problems);
+        List<String> upserted = apply(inst, repo, config.branch(), head, upserts, kept, problems);
         Map<String, String> gone = new LinkedHashMap<>();
         for (FileRef old : olds) {
             String text = github.content(inst, repo, old.path(), last);
@@ -147,7 +147,7 @@ public class GitHubSync {
         }
         List<GitHubClient.Annotation> problems = new ArrayList<>();
         Set<String> kept = new LinkedHashSet<>();
-        List<String> upserted = apply(inst, repo, head, upserts, kept, problems);
+        List<String> upserted = apply(inst, repo, config.branch(), head, upserts, kept, problems);
         Map<String, String> gone = new LinkedHashMap<>();
         if (problems.isEmpty()) {
             // a file that failed to parse still holds its jobs: delete nothing unless every file read
@@ -163,7 +163,7 @@ public class GitHubSync {
         return new Result(head, true, upserted, deleted, problems, false, null);
     }
 
-    private List<String> apply(long inst, String repo, String head, List<FileRef> upserts, Set<String> kept,
+    private List<String> apply(long inst, String repo, String branch, String head, List<FileRef> upserts, Set<String> kept,
                                List<GitHubClient.Annotation> problems) {
         List<String> upserted = new ArrayList<>();
         for (FileRef f : upserts) {
@@ -177,7 +177,7 @@ public class GitHubSync {
                 continue;
             }
             parsed.jobs().stream().map(JobFiles.Job::uuid).filter(u -> u != null).forEach(kept::add);
-            List<JobTarget.Problem> p = target.upsert(repo, f.project(), f.path(), head, text);
+            List<JobTarget.Problem> p = target.upsert(repo, branch, f.project(), f.path(), head, text);
             problems.addAll(annotate(f.path(), parsed, p));
             if (p.isEmpty()) {
                 upserted.add(f.path());

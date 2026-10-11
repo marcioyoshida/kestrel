@@ -204,6 +204,20 @@ search
             </div>
         </div>
     </g:if>
+    <g:if test="${kestrelGitHubSource}">
+        <div class="list-group-item" id="kestrel-github-source">
+            <div class="alert alert-info">
+                <i class="fab fa-github"></i>
+                <g:message code="kestrel.github.synced.banner" default="Synced from GitHub:"/>
+                <a href="${enc(attr: kestrelGitHubSource.viewUrl)}" target="_blank" rel="noopener noreferrer"><g:enc>${kestrelGitHubSource.repo}: ${kestrelGitHubSource.path}</g:enc></a>
+                (<code><g:enc>${kestrelGitHubSource.commit?.take(7)}</g:enc></code>).
+                <g:message code="kestrel.github.synced.readonly" default="Changes go through a pull request; this job cannot be edited or deleted here."/>
+                <a class="btn btn-default btn-sm" href="${enc(attr: kestrelGitHubSource.editUrl)}" target="_blank" rel="noopener noreferrer">
+                    <g:message code="kestrel.github.edit" default="Edit in GitHub"/>
+                </a>
+            </div>
+        </div>
+    </g:if>
 <tmpl:show scheduledExecution="${scheduledExecution}" crontab="${crontab}" jobComponents="${jobComponents}" jobComponentValues="${jobComponentValues}"/>
 <g:render template="/menu/copyModal"
           model="[projectNames: projectNames]"/>

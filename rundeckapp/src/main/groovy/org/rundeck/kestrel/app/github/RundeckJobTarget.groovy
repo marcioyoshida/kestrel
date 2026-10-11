@@ -60,7 +60,7 @@ class RundeckJobTarget implements JobTarget {
     }
 
     @Override
-    List<Problem> upsert(String repo, String project, String path, String commit, String content) {
+    List<Problem> upsert(String repo, String branch, String project, String path, String commit, String content) {
         Map pre = prepare(repo, project, content)
         if (pre.problems) {
             return pre.problems
@@ -69,7 +69,7 @@ class RundeckJobTarget implements JobTarget {
             [user: user, method: META], pre.auth)
         List<Problem> problems = result.errjobs.collect { Map e -> new Problem(((e.entrynum ?: 0) as int) - 1, e.errmsg?.toString()) }
         result.jobs.each { ScheduledExecution job ->
-            jobMetadataService.setJobPluginMeta(job, META, [repo: repo, path: path, commit: commit])
+            jobMetadataService.setJobPluginMeta(job, META, [repo: repo, branch: branch, path: path, commit: commit])
         }
         scheduledExecutionService.issueJobChangeEvents(result.jobChangeEvents)
         problems
@@ -94,6 +94,12 @@ class RundeckJobTarget implements JobTarget {
         }
         jobMetadataService.removeJobPluginMeta(project, uuid, META)
         []
+    }
+
+    /** @return {@code [repo, branch, path, commit]} if the job is synced from GitHub, else null */
+    Map source(ScheduledExecution job) {
+        Map meta = jobMetadataService.getJobPluginMeta(job, META)
+        meta?.repo ? meta : null
     }
 
     @Override

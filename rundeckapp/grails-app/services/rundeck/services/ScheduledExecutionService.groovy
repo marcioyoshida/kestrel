@@ -16,6 +16,7 @@
 
 package rundeck.services
 
+import org.rundeck.kestrel.app.github.KestrelGitHub
 import org.rundeck.kestrel.app.KestrelSettings
 import org.rundeck.kestrel.scheduler.ScheduleBucket
 import org.rundeck.kestrel.scheduler.UnsupportedScheduleException
@@ -1500,6 +1501,11 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
             ]
             return [error: err,success: false]
         }
+        String readOnly = KestrelGitHub.readOnly(applicationContext, scheduledExecution, callingAction)
+        if (readOnly) {
+            return [error: [message: readOnly, errorCode: 'kestrel.github.synced', id: scheduledExecution.extid,
+                            job: scheduledExecution], success: false]
+        }
         def changeinfo = [user: user, method: callingAction, change: 'delete']
         def jobdata = scheduledExecution.properties
         def jobtitle = "[" + scheduledExecution.extid + "] " + scheduledExecution.generateFullName()
@@ -2762,6 +2768,10 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
         def ScheduledExecution scheduledExecution = getByIDorUUID(id)
         if (!scheduledExecution) {
             return [success: false, error:"No Job found with ID: ${id}"]
+        }
+        String readOnly = KestrelGitHub.readOnly(applicationContext, scheduledExecution, changeinfo?.method as String)
+        if (readOnly) {
+            return [success: false, scheduledExecution: scheduledExecution, error: readOnly, message: readOnly]
         }
 
         def oldJob = new OldJob(

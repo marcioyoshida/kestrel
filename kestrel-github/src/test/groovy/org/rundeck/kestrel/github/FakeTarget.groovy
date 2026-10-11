@@ -1,6 +1,6 @@
 package org.rundeck.kestrel.github
 
-/** Rundeck as a map: project -> uuid -> [repo, path, commit]. Jobs named 'bad' fail validation. */
+/** Rundeck as a map: project -> uuid -> [repo, branch, path, commit]. Jobs named 'bad' fail validation. */
 class FakeTarget implements JobTarget {
     Map<String, Map<String, Map>> jobs = [:].withDefault { [:] }
     Map<String, String> synced = [:]
@@ -14,11 +14,11 @@ class FakeTarget implements JobTarget {
     }
 
     @Override
-    List<Problem> upsert(String repo, String project, String path, String commit, String content) {
+    List<Problem> upsert(String repo, String branch, String project, String path, String commit, String content) {
         def problems = validate(repo, project, path, content)
         if (problems) return problems
         JobFiles.parse(content).jobs().each { j ->
-            jobs[project][j.uuid()] = [repo: repo, path: path, commit: commit, name: j.name()]
+            jobs[project][j.uuid()] = [repo: repo, branch: branch, path: path, commit: commit, name: j.name()]
         }
         log << "upsert ${project}/${path}".toString()
         []

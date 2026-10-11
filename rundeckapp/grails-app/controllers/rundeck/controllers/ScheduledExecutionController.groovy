@@ -16,6 +16,7 @@
 
 package rundeck.controllers
 
+import org.rundeck.kestrel.app.github.KestrelGitHub
 import com.dtolabs.client.utils.Constants
 import com.dtolabs.rundeck.app.api.ApiBulkJobDeleteRequest
 import com.dtolabs.rundeck.app.api.ApiRunAdhocRequest
@@ -598,7 +599,8 @@ Since: v53''',
                 jobComponentValues: jobComponentValues,
                 max: params.int('max') ?: 10,
                 offset: params.int('offset') ?: 0,
-                defaultRecentFilter: defaultRecentFilter] + model
+                defaultRecentFilter: defaultRecentFilter,
+                kestrelGitHubSource: KestrelGitHub.source(grailsApplication.mainContext, scheduledExecution)] + model
         if (params.opt && (params.opt instanceof Map)) {
             dataMap.selectedoptsmap = params.opt
         }
@@ -2409,6 +2411,11 @@ Authorization required: `delete` on project resource type `job`, and `delete` on
         if (!params.project || params.project != scheduledExecution.project) {
             return redirect(controller: 'scheduledExecution', action: 'edit',
                     params: [id: params.id, project: scheduledExecution.project])
+        }
+        // a job synced from GitHub is edited there (ADR 0005)
+        Map synced = KestrelGitHub.source(grailsApplication.mainContext, scheduledExecution)
+        if (synced) {
+            return redirect(url: synced.editUrl)
         }
         //clear session workflow
         if(session.editWF ){

@@ -104,6 +104,17 @@ projects:
         JobFiles.parse('name: x').error() == 'a job file must be a YAML list of Rundeck jobs'
     }
 
+    def "links: github.com and GitHub Enterprise; paths encoded per segment"() {
+        expect:
+        new GitHubLinks(api).edit('o/r', 'release/1', 'jobs/a b.yaml') == edit
+        new GitHubLinks(api).blob('o/r', 'abc', 'x.yaml') == blob
+
+        where:
+        api                             | edit                                                     | blob
+        'https://api.github.com'        | 'https://github.com/o/r/edit/release/1/jobs/a%20b.yaml'  | 'https://github.com/o/r/blob/abc/x.yaml'
+        'https://ghe.example/api/v3/'   | 'https://ghe.example/o/r/edit/release/1/jobs/a%20b.yaml' | 'https://ghe.example/o/r/blob/abc/x.yaml'
+    }
+
     def "first push syncs the whole tree; then only what changed"() {
         given:
         gh.commit('main', ['kestrel.yaml': CONFIG, 'jobs/ops/a.yaml': job('a') + job('a2'), 'jobs/ops/db/b.yaml': job('b'),
@@ -129,6 +140,7 @@ projects:
         target.log == ['upsert ops/jobs/ops/a.yaml', 'upsert ops/jobs/ops/c.yaml', 'delete db/b']
         target.jobs.ops.a.name == 'a-edited'
         target.jobs.ops.a2.path == 'jobs/ops/c.yaml'
+        target.jobs.ops.a2.branch == 'main'
         target.jobs.db.isEmpty()
 
         when: 'the same head again'

@@ -14,8 +14,8 @@ public interface JobTarget {
     /** Validates a job file for the project without saving anything. */
     List<Problem> validate(String repo, String project, String path, String content);
 
-    /** Creates or updates (by uuid) every job in the file, recording repo, path and commit. */
-    List<Problem> upsert(String repo, String project, String path, String commit, String content);
+    /** Creates or updates (by uuid) every job in the file, recording repo, branch, path and commit. */
+    List<Problem> upsert(String repo, String branch, String project, String path, String commit, String content);
 
     /** Deletes the job if it exists in the project and was synced from this repo. */
     List<Problem> delete(String repo, String project, String uuid);
