@@ -19,7 +19,8 @@ class DynamoDatastoreSpec extends Specification {
     @Shared DynamoDatastore datastore
     @Shared String prefix = 'spec' + System.nanoTime()
     static final List<String> INDEXED = ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token', 'TRef.jobUuid',
-                                         'TExec.dateCompleted:null', 'TExec.project>dateCompleted', 'TExec.project>dateStarted']
+                                         'TExec.dateCompleted:null', 'TExec.project>dateCompleted', 'TExec.project>dateStarted',
+                                         'TStep.description']  // declared on the base class, queried on a subclass
     static final List<Class> CLASSES = [TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef, TOwner, TFlow]
 
     static String endpoint() {
@@ -687,6 +688,16 @@ class DynamoDatastoreSpec extends Specification {
         DynamoQuery.LAST_PLAN.get() == 'sorted:project>dateCompleted'
     }
 
+    def "an index named on a base class serves its subclasses (BaseReport.project for ExecReport)"() {
+        when:
+        TCmdStep.withNewSession { new TCmdStep(description: 'sub-idx', command: 'c').save(flush: true, failOnError: true) }
+        def found = TCmdStep.withNewSession { TCmdStep.findAllByDescription('sub-idx')*.command }
+
+        then:
+        found == ['c']
+        DynamoQuery.LAST_PLAN.get() == 'index:description'
+    }
+
     def "an unordered or unpaged query keeps the regular plan"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { eq('project', 'sorted-moves'); order('dateCompleted', 'desc') } }
@@ -717,15 +728,20 @@ class DynamoDatastoreSpec extends Specification {
                 dateCompleted: new Date(10_000L + i)).save(flush: true, failOnError: true).id }
         }
 
-        when: 'a datastore with the index starts on the same tables'
+        when: 'a datastore with the sorted index and a new plain one (TExec.user) starts on the same tables'
         datastore.close()
-        datastore = newDatastore(INDEXED, fresh)
+        datastore = newDatastore(INDEXED + ['TExec.user'], fresh)
         def top = TExec.withNewSession {
             TExec.createCriteria().list(max: 2) { eq('project', 'backfill'); order('dateCompleted', 'desc') }*.id
         }
+        def topPlan = DynamoQuery.LAST_PLAN.get()
+        def byUser = TExec.withNewSession { TExec.findAllByUser('u')*.id.sort() }
+        def userPlan = DynamoQuery.LAST_PLAN.get()
 
         then:
         top == [ids[3], ids[2]]
-        DynamoQuery.LAST_PLAN.get() == 'sorted:project>dateCompleted'
+        topPlan == 'sorted:project>dateCompleted'
+        byUser == ids
+        userPlan == 'index:user'
     }
 }

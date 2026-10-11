@@ -85,7 +85,7 @@ class DynamoDatastore extends SimpleMapDatastore {
         if (createTables) {
             tables.ensureAll(mappingContext.persistentEntities.findAll { it.root }.collect { familyOf(it) })
         }
-        buildSortedIndexes()
+        buildIndexes()
         leaveSingleDatastoreLookupToOthers()
         // withTransaction takes getCurrentSession(): inside a Hibernate transaction that is the
         // transaction's shared session, so code around withTransaction sees the same instances.
@@ -150,30 +150,61 @@ class DynamoDatastore extends SimpleMapDatastore {
     }
 
     /**
-     * Builds each sorted index once for the rows that existed before it (a scan of the entity's
-     * table), then writes a marker so later starts skip it. Idempotent, so pods starting together
-     * may both build it; rows written meanwhile index themselves.
+     * Builds each index once for the rows that existed before it: plain indexes (including
+     * to-one foreign keys and null-only ones) and sorted indexes. Per table, one scan covers every
+     * index without a "built" marker; the markers then make later starts skip it. Idempotent, so
+     * pods starting together may both build; rows written meanwhile index themselves.
      */
-    private void buildSortedIndexes() {
-        for (SortedIndex s : sortedIndexes) {
-            PersistentEntity entity = mappingContext.persistentEntities.find { PersistentEntity pe -> pe.javaClass.simpleName == s.entityName }
-            PersistentEntity root = entity.rootEntity
+    private void buildIndexes() {
+        String indexTable = tables.indexTable()
+        for (PersistentEntity root : mappingContext.persistentEntities.findAll { PersistentEntity pe -> pe.root }) {
             String family = familyOf(root)
-            String indexTable = tables.indexTable()
-            Map<String, AttributeValue> marker = [k: AttributeValue.fromS(s.builtKey(family)), id: AttributeValue.fromS('-')]
-            if (client.getItem { it.tableName(indexTable).key(marker).consistentRead(true) }.hasItem()) continue
+            List<PersistentEntity> hierarchy = mappingContext.persistentEntities.findAll { PersistentEntity pe -> pe.rootEntity == root } as List<PersistentEntity>
+            Set<String> plain = new TreeSet<>()
+            for (PersistentEntity e : hierarchy) {
+                for (PersistentProperty p : e.persistentProperties) {
+                    def form = p.mapping?.mappedForm
+                    if (form instanceof KeyValue && ((KeyValue) form).isIndex()) plain << p.name
+                }
+            }
+            List<SortedIndex> sorted = sortedIndexes.findAll { SortedIndex si -> hierarchy.any { PersistentEntity e -> si.appliesTo(e) } }
+            Map<String, Object> missing = [:]  // marker key -> property name or SortedIndex
+            for (String prop : plain) missing["${family}|>built|${prop}".toString()] = prop
+            for (SortedIndex si : sorted) missing[si.builtKey(family)] = si
+            missing = missing.findAll { String marker, Object what ->
+                !client.getItem { it.tableName(indexTable).key(markerKey(marker)).consistentRead(true) }.hasItem()
+            }
+            if (missing.isEmpty()) continue
             List<Map<String, AttributeValue>> entries = []
+            int rows = 0
             client.scanPaginator { it.tableName(tables.entityTable(family)).consistentRead(true) }.items().each { Map<String, AttributeValue> item ->
+                rows++
+                String id = item.get('id').s()
                 String disc = item.get(DynamoEntityPersister.DISCRIMINATOR)?.s()
                 PersistentEntity rowEntity = disc ? (mappingContext.getChildEntityByDiscriminator(root, disc) ?: root) : root
-                AttributeValue pv = item.get(s.partition)
-                if (!s.appliesTo(rowEntity) || pv == null || Boolean.TRUE == pv.nul()) return
-                AttributeValue sv = item.get(s.sort)
-                Object sort = sv == null || Boolean.TRUE == sv.nul() ? null : sv.n() != null ? (Object) new BigDecimal(sv.n()) : (Object) sv.s()
-                entries << [k : AttributeValue.fromS(s.partitionKey(family, ValueCodec.decode(pv, rowEntity.getPropertyByName(s.partition)?.type))),
-                            id: AttributeValue.fromS(SortedIndex.entryId(sort, item.get('id').s()))]
+                for (Object what : missing.values()) {
+                    if (what instanceof SortedIndex) {
+                        SortedIndex si = (SortedIndex) what
+                        AttributeValue pv = item.get(si.partition)
+                        if (!si.appliesTo(rowEntity) || absent(pv)) continue
+                        AttributeValue sv = item.get(si.sort)
+                        Object sort = absent(sv) ? null : sv.n() != null ? (Object) new BigDecimal(sv.n()) : (Object) sv.s()
+                        entries << [k : AttributeValue.fromS(si.partitionKey(family, ValueCodec.decode(pv, rowEntity.getPropertyByName(si.partition)?.type))),
+                                    id: AttributeValue.fromS(SortedIndex.entryId(sort, id))]
+                    } else {
+                        String prop = (String) what
+                        PersistentProperty p = rowEntity.getPropertyByName(prop)
+                        if (p == null) continue
+                        AttributeValue v = item.get(prop)
+                        boolean nullOnly = nullOnlyIndexes.contains(p.owner.javaClass.simpleName + '.' + p.name)
+                        String value = absent(v) ? null : (v.s() ?: v.n() ?: v.bool()?.toString())
+                        if (nullOnly ? value != null : value == null) continue
+                        entries << [k : AttributeValue.fromS("${family}|${prop}|${value == null ? DynamoEntityPersister.IndexTableValueIndexer.NULL_KEY : value}".toString()),
+                                    id: AttributeValue.fromS(id)]
+                    }
+                }
             }
-            entries << marker
+            entries.addAll(missing.keySet().collect { String marker -> markerKey(marker) })
             for (List<Map<String, AttributeValue>> chunk : entries.collate(25)) {
                 Map<String, List<WriteRequest>> req = [(indexTable): chunk.collect { Map<String, AttributeValue> it ->
                     WriteRequest.builder().putRequest(PutRequest.builder().item(it).build()).build() }]
@@ -182,8 +213,17 @@ class DynamoDatastore extends SimpleMapDatastore {
                     req = r.unprocessedItems()?.isEmpty() ? null : r.unprocessedItems()
                 }
             }
-            LoggerFactory.getLogger(DynamoDatastore).info("Kestrel DynamoDB: built sorted index ${s} for ${entries.size() - 1} existing rows")
+            LoggerFactory.getLogger(DynamoDatastore).info(
+                "Kestrel DynamoDB: built ${missing.size()} index(es) of ${family} over ${rows} existing rows: ${missing.values().join(', ')}")
         }
+    }
+
+    private static Map<String, AttributeValue> markerKey(String marker) {
+        [k: AttributeValue.fromS(marker), id: AttributeValue.fromS('-')]
+    }
+
+    private static boolean absent(AttributeValue v) {
+        v == null || Boolean.TRUE == v.nul()
     }
 
     /** The key-value family of a root entity, as the persister names it (mapped family, else class name). */
@@ -218,8 +258,13 @@ class DynamoDatastore extends SimpleMapDatastore {
         }
         for (PersistentEntity entity : mappingContext.persistentEntities) {
             for (PersistentProperty p : entity.persistentProperties) {
-                String name = entity.javaClass.simpleName + '.' + p.name
-                boolean wanted = p instanceof ToOne || plain.contains(name) || nullOnlyIndexes.contains(name)
+                // An entry names a class; its subclasses' rows are indexed too (BaseReport.project
+                // must reach ExecReport, the class reports are saved and queried as).
+                boolean wanted = p instanceof ToOne
+                for (PersistentEntity e = entity; e != null && !wanted; e = e.parentEntity) {
+                    String name = e.javaClass.simpleName + '.' + p.name
+                    wanted = plain.contains(name) || nullOnlyIndexes.contains(name)
+                }
                 def form = p.mapping?.mappedForm
                 if (wanted && form instanceof KeyValue) {
                     ((KeyValue) form).setIndex(true)

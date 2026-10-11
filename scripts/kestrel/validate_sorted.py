@@ -6,7 +6,8 @@ some sharing a completion time, then checks that:
   - project execution pages (first, middle, last) come back in Rundeck's order, with the total;
   - a job's execution page and the project history come back newest first;
   - no page query read more than 500 rows. The datastore logs every query that reads more, with
-    its max; totals are counted over every row (max -1) and log, which also proves the log works.
+    its plan and max; totals (max -1) count every matching row, and with N > 500 they must log,
+    through an index rather than a table scan.
 
   validate_sorted.py          local Kestrel (local-run.sh)
   validate_sorted.py --eks    the reference environment (deploy.sh)
@@ -147,7 +148,7 @@ def run(ui, user, since):
     s, body = m.call(ui, f"/api/{A}/project/{project}/history?max=20", headers=T)
     lat.append(time.time() - t)
     got = json.loads(body) if s == 200 else {}
-    ends = [e.get("date-ended", {}).get("unixtime") for e in got.get("events", [])]
+    ends = [e.get("endtime") for e in got.get("events", [])]  # history events: date-ended is a string here
     newest = int(max(e["completed"] for e in execs).timestamp() * 1000)
     check("history page: newest first", len(ends) == 20 and ends == sorted(ends, reverse=True) and ends[0] == newest,
           f"HTTP {s}, {len(ends)} events, first {ends[:1]}, expected {newest}")
@@ -158,8 +159,9 @@ def run(ui, user, since):
     pages = [r.group(0) for r in reads if r.group(5) != "-1"]
     counts = [r.group(0) for r in reads if r.group(5) == "-1"]
     check("no page query read more than 500 rows", not pages, "; ".join(pages[:3]))
-    check("totals still count every row (and the read log works)", any(f"read {N} rows" in c or f"read {N + 0}" in c for c in counts),
-          "; ".join(counts[:2]))
+    if N > 500:  # only reads over 500 rows are logged
+        check("totals count through an index, never a table scan",
+              counts and not any("plan scan" in c for c in counts), "; ".join(counts[:3]))
     print(f"      page latencies: {', '.join(f'{x * 1000:.0f} ms' for x in lat)}")
 
     s, _ = m.call(ui, f"/api/{A}/project/{project}", "DELETE", headers=T)
