@@ -318,7 +318,8 @@ class FakeKube:
                 env["KESTREL_SECURE_OPTIONS_DIR"] = d
         log_path = os.path.join(root, "pod.log")
         cmd = [self.java, "-Xmx1536m", f"-Drdeck.base={root}/rdeck", f"-Dserver.http.port={port}",
-               "-Dserver.address=127.0.0.1", f"-Drundeck.server.uuid={server_uuid(NS, name)}", "-jar", self.war]
+               "-Dserver.address=127.0.0.1", f"-Drundeck.server.uuid={server_uuid(NS, name)}",
+               "-Drundeck.clusterMode.enabled=true", "-jar", self.war]
         with open(log_path, "w") as out:
             p = subprocess.Popen(cmd, cwd=root, env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         with self.lock:

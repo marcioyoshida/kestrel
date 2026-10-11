@@ -80,7 +80,6 @@ def base_env():
         "KESTREL_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/000000000000/local.fifo",
         "KESTREL_LEDGER_TABLE": "local-ledger", "KESTREL_TRIGGER_IMAGE": "local/kestrel-trigger:none",
         "KESTREL_ISOLATED_CLASSES": "default,probe", "KESTREL_ISOLATED_POD_TEMPLATE_PREFIX": "kestrel-isolated-",
-        "RUNDECK_CLUSTERMODE_ENABLED": "true",
     })
     return env
 
@@ -108,7 +107,9 @@ def start_web(war, kube):
     os.makedirs(f"{BASE}/rdeck/var/logs", exist_ok=True)
     log = open(f"{BASE}/web.log", "w")
     p = subprocess.Popen([JAVA, "-Xmx2g", f"-Drdeck.base={BASE}/rdeck", "-Dserver.http.port=4440",
-                          "-Dserver.address=127.0.0.1", f"-Drundeck.server.uuid={WEB_UUID}", "-jar", war],
+                          "-Dserver.address=127.0.0.1", f"-Drundeck.server.uuid={WEB_UUID}",
+                          # the chart sets it through the image's config template (RUNDECK_CLUSTERMODE_ENABLED)
+                          "-Drundeck.clusterMode.enabled=true", "-jar", war],
                          cwd=BASE, env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     for _ in range(120):
         try:
@@ -121,49 +122,173 @@ def start_web(war, kube):
     sys.exit(f"web not ready after 10 min; see {BASE}/web.log")
 
 
-def job_yaml(name, uuid, cls=None, script="echo hi", options="", schedule=""):
+def job_yaml(name, uuid, cls=None, script="echo hi", options="", schedule="", extra=""):
     plugins = (f"  plugins:\n    ExecutionLifecycle:\n      kestrel-isolated:\n        runnerClass: {cls}\n"
                if cls else "")
     body = "\n".join("        " + ln for ln in script.splitlines())
     return (f"- name: {name}\n  uuid: {uuid}\n  description: ''\n  executionEnabled: true\n"
-            f"  scheduleEnabled: true\n  loglevel: INFO\n  nodeFilterEditable: false\n{plugins}{options}{schedule}"
+            f"  scheduleEnabled: true\n  loglevel: INFO\n  nodeFilterEditable: false\n{plugins}{options}{schedule}{extra}"
             f"  sequence:\n    keepgoing: false\n    strategy: node-first\n    commands:\n"
             f"    - script: |-\n        #!/bin/sh\n{body}\n")
 
 
 def main():
-    commit = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else "HEAD"
-    os.makedirs(BASE, exist_ok=True)
-    war = war_for(commit)
-    fake_kube.clean(BASE)
-    start_dynamodb()
-    pod_env = base_env()
-    kube = fake_kube.FakeKube(BASE, war, JAVA, pod_env, pod_templates=pod_templates()).start()
-    web = start_web(war, kube)
     started = time.time()
-    try:
-        run_checks(kube)
-    finally:
-        kube.stop()
-        web.terminate()
+    if m2c.EKS:
+        run_checks(EksCluster())
+    else:
+        commit = next((a for a in sys.argv[1:] if not a.startswith("-")), "HEAD")
+        os.makedirs(BASE, exist_ok=True)
+        war = war_for(commit)
+        fake_kube.clean(BASE)
+        start_dynamodb()
+        kube = fake_kube.FakeKube(BASE, war, JAVA, base_env(), pod_templates=pod_templates()).start()
+        web = start_web(war, kube)
         try:
-            web.wait(60)
-        except subprocess.TimeoutExpired:
-            web.kill()
+            run_checks(FakeCluster(kube))
+        finally:
+            kube.stop()
+            web.terminate()
+            try:
+                web.wait(60)
+            except subprocess.TimeoutExpired:
+                web.kill()
     print(f"\n{sum(ok for _, ok in RESULTS)}/{len(RESULTS)} checks passed in {int(time.time() - started)} s")
     sys.exit(0 if all(ok for _, ok in RESULTS) else 1)
 
 
-def state(kube):
-    with kube.lock:
-        return json.loads(json.dumps({"objects": kube.objects, "events": kube.events, "pods": kube.pods}))
+class FakeCluster:
+    """The checks' view of Kubernetes, backed by fake_kube."""
+    web_uuids = {WEB_UUID}
+
+    def __init__(self, kube):
+        self.kube = kube
+
+    def _state(self):
+        with self.kube.lock:
+            return json.loads(json.dumps({"objects": self.kube.objects, "events": self.kube.events,
+                                          "pods": self.kube.pods}))
+
+    def objects(self, kind):
+        return [o for p, o in self._state()["objects"].items() if f"/{kind}/" in p]
+
+    def job_for(self, eid):
+        return next((o for o in self.objects("jobs")
+                     if o["metadata"].get("labels", {}).get("kestrel.io/execution") == str(eid)), None)
+
+    def job_result(self, name):
+        events = str(self._state()["events"])
+        return "Complete" if f"job complete {name}" in events else "Failed" if f"job failed {name}" in events else None
+
+    def pod_exits(self, name):
+        return [a["exit"] for a in self._state()["pods"].get(name, [])]
+
+    def secret(self, name):
+        return next((o for o in self.objects("secrets") if o["metadata"]["name"] == name), None)
+
+    def cronjob_for(self, job_uuid):
+        return next((o for o in self.objects("cronjobs")
+                     if o["metadata"].get("labels", {}).get("kestrel.io/job") == job_uuid), None)
+
+    def trigger_cronjobs(self):
+        return [o for o in self.objects("cronjobs")
+                if o["metadata"].get("labels", {}).get("app.kubernetes.io/component") == "trigger"]
+
+    def jobs_of(self, cronjob):
+        return sorted(n for n in self._state()["pods"] if n.startswith(cronjob + "-"))
+
+    def kill_pod(self, name):
+        return self.kube.kill_pod(name)
+
+    def delete_job(self, name):
+        self.kube.handle("DELETE", f"/apis/batch/v1/namespaces/kestrel/jobs/{name}", None)
+
+    def pod_errors(self):
+        errors = []
+        for name, attempts in self._state()["pods"].items():
+            for a in attempts:
+                with open(a["log"], errors="replace") as fh:
+                    errors += [f"{name}: {ln.strip()[:160]}" for ln in fh if " ERROR " in ln]
+        return errors
+
+    def web_errors(self, since):
+        with open(f"{BASE}/web.log", errors="replace") as fh:
+            return [ln.strip()[:160] for ln in fh if " ERROR " in ln]
+
+    def role_names(self):
+        return {}
 
 
-def job_for(kube, eid):
-    for p, o in state(kube)["objects"].items():
-        if "/jobs/" in p and o["metadata"].get("labels", {}).get("kestrel.io/execution") == str(eid):
-            return o
-    return None
+class EksCluster:
+    """The checks' view of Kubernetes on the reference EKS cluster (kubectl)."""
+
+    def __init__(self):
+        import soak
+        import validate as v
+        self.k, self.v = soak.kubectl, v
+        self.web_uuids = {fake_kube.server_uuid("kestrel", f"kestrel-web-{i}") for i in range(4)}
+
+    def _get(self, *args):
+        out = self.k("get", *args, "-o", "json", check=False)
+        return json.loads(out) if out else {}
+
+    def objects(self, kind):
+        return self._get(kind).get("items", [])
+
+    def job_for(self, eid):
+        items = self._get("jobs", "-l", f"kestrel.io/execution={eid}").get("items", [])
+        return items[0] if items else None
+
+    def job_result(self, name):
+        for c in self._get("job", name).get("status", {}).get("conditions", []):
+            if c.get("type") in ("Complete", "Failed") and c.get("status") == "True":
+                return c["type"]
+        return None
+
+    def pod_exits(self, name):
+        pods = sorted(self._get("pods", "-l", f"batch.kubernetes.io/job-name={name}").get("items", []),
+                      key=lambda p: p["metadata"]["creationTimestamp"])
+        out = []
+        for p in pods:
+            st = next((c for c in p.get("status", {}).get("containerStatuses", []) if c["name"] == "rundeck"), {})
+            out.append(st.get("state", {}).get("terminated", {}).get("exitCode"))
+        return out
+
+    def secret(self, name):
+        out = self.k("get", "secret", name, "-o", "json", check=False)
+        return json.loads(out) if out else None
+
+    def cronjob_for(self, job_uuid):
+        items = self._get("cronjobs", "-l", f"kestrel.io/job={job_uuid}").get("items", [])
+        return items[0] if items else None
+
+    def trigger_cronjobs(self):
+        return self._get("cronjobs", "-l", "app.kubernetes.io/component=trigger").get("items", [])
+
+    def jobs_of(self, cronjob):
+        return sorted(j["metadata"]["name"] for j in self._get("jobs").get("items", [])
+                      if j["metadata"]["name"].startswith(cronjob + "-"))
+
+    def kill_pod(self, name):
+        pods = self._get("pods", "-l", f"batch.kubernetes.io/job-name={name}").get("items", [])
+        running = [p["metadata"]["name"] for p in pods if p.get("status", {}).get("phase") == "Running"]
+        return bool(running) and self.k("delete", "pod", running[0], "--grace-period=0", "--force", check=False) is not None
+
+    def delete_job(self, name):
+        self.k("delete", "job", name, "--wait=false", check=False)
+
+    def pod_errors(self):
+        errors = []
+        for p in self._get("pods", "-l", "app.kubernetes.io/component=isolated").get("items", []):
+            text = self.k("logs", p["metadata"]["name"], "-c", "rundeck", check=False)
+            errors += [f"{p['metadata']['name']}: {ln.strip()[:160]}" for ln in text.splitlines() if " ERROR " in ln]
+        return errors
+
+    def web_errors(self, since):
+        return m2c.server_errors(since)
+
+    def role_names(self):
+        return {c: self.v.out("KestrelRef", f"Isolated{c.capitalize()}RoleName") for c in ("default", "probe")}
 
 
 def wait_for(fn, limit=300, step=2):
@@ -176,7 +301,19 @@ def wait_for(fn, limit=300, step=2):
     return fn()
 
 
-def run_checks(kube):
+def sid(job_name):
+    return fake_kube.server_uuid("kestrel", job_name)
+
+
+AWSID = r"""c=$(curl -s -H "Authorization: $(cat "$AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")" "$AWS_CONTAINER_CREDENTIALS_FULL_URI" | tr -d '\n ')
+f() { printf '%s' "$c" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
+curl -s --aws-sigv4 "aws:amz:us-east-1:sts" --user "$(f AccessKeyId):$(f SecretAccessKey)" \
+  -H "x-amz-security-token: $(f Token)" \
+  "https://sts.us-east-1.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15" | grep -o '<Arn>[^<]*</Arn>'"""
+
+
+def run_checks(cl):
+    since = time.time()
     ui, user, _ = m2c.sign_in()
     s, body = call(ui, f"/api/{API}/tokens", "POST", json.dumps({"user": user, "roles": "admin", "duration": "4h"}))
     T = {"X-Rundeck-Auth-Token": json.loads(body)["token"]}
@@ -186,36 +323,44 @@ def run_checks(kube):
     s, _ = call(api, f"/api/{API}/projects", "POST", json.dumps({"name": p, "config": {}}), headers=T)
     check("setup: project", s == 201, f"HTTP {s}")
 
-    u = {k: str(uuidlib.uuid4()) for k in ("hello", "secure", "fails", "sleepy", "killed", "sched", "pool", "badclass")}
-    jobs = "".join([
+    names = ("hello", "secure", "fails", "retry", "sleepy", "killed", "sched", "pool", "badclass", "swept",
+             "awsid-default", "awsid-probe")
+    u = {k: str(uuidlib.uuid4()) for k in names}
+    jobs = [
         job_yaml("hello", u["hello"], "default",
                  'echo "isolated-hello server=$RD_JOB_SERVERUUID pod=$KESTREL_POD_NAME role=$KESTREL_ROLE"'),
         job_yaml("secure", u["secure"], "default",
                  'echo "pw-sha=$(printf %s "$RD_OPTION_PW" | sha256sum | cut -c1-12)"',
                  options="  options:\n  - name: pw\n    secure: true\n    valueExposed: true\n    required: true\n"),
         job_yaml("fails", u["fails"], "default", "echo about-to-fail\nexit 7"),
+        job_yaml("retry", u["retry"], "default", "echo attempt-$RD_JOB_RETRYATTEMPT\nexit 1", extra="  retry: '1'\n"),
         job_yaml("sleepy", u["sleepy"], "default", "echo sleepy-started\nsleep 120\necho sleepy-done"),
         job_yaml("killed", u["killed"], "default", "echo killed-started\nsleep 90\necho killed-done"),
+        job_yaml("swept", u["swept"], "default", "echo swept-must-not-run"),
         job_yaml("pool", u["pool"], None, 'echo "pool server=$RD_JOB_SERVERUUID"'),
-    ])
-    s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&uuidOption=preserve", "POST", jobs,
+    ]
+    if m2c.EKS:
+        jobs += [job_yaml("awsid-default", u["awsid-default"], "default", AWSID),
+                 job_yaml("awsid-probe", u["awsid-probe"], "probe", AWSID)]
+    s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&uuidOption=preserve", "POST", "".join(jobs),
                    headers=T, ctype="application/yaml")
     res = json.loads(body) if s == 200 else {}
-    check("import: 6 jobs (5 isolated, 1 pool)", len(res.get("succeeded", [])) == 6, f"HTTP {s} {body[:300]}")
+    check(f"import: {len(jobs)} jobs ({len(jobs) - 1} isolated, 1 pool)", len(res.get("succeeded", [])) == len(jobs),
+          f"HTTP {s} {body[:300]}")
 
     s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&uuidOption=preserve", "POST",
                    job_yaml("badclass", u["badclass"], "gpu-xl"), headers=T, ctype="application/yaml")
     res = json.loads(body) if s == 200 else {}
     check("import: an unknown runner class is rejected", len(res.get("failed", [])) == 1 and not res.get("succeeded"),
-          body[:300])
+          body[:160])
 
     s, body = call(api, f"/api/{API}/job/{u['hello']}?format=yaml", headers=T, accept="application/yaml")
-    check("export: the runner class round-trips in the job YAML", "kestrel-isolated:" in body and "runnerClass: default" in body,
-          body[:200])
+    check("export: the runner class round-trips in the job YAML",
+          "kestrel-isolated:" in body and "runnerClass: default" in body, body[:120])
 
     def run(key, opts=None):
         s, body = call(api, f"/api/{API}/job/{u[key]}/run", "POST", json.dumps({"options": opts or {}}), headers=T)
-        return json.loads(body).get("id") if s == 200 else None, s, body
+        return json.loads(body).get("id") if s == 200 else None
 
     def execution(eid):
         s, body = call(api, f"/api/{API}/execution/{eid}", headers=T)
@@ -225,154 +370,194 @@ def run_checks(kube):
         s, body = call(api, f"/api/{API}/execution/{eid}/output?format=text", headers=T, accept="text/plain")
         return body if s == 200 else ""
 
+    def done(eid, limit=600):
+        return m2c.wait_done(api, T, eid, limit=limit)
+
     # ---- run-now: queued, a Job, run in that pod
     t0 = time.time()
-    e_hello, s, body = run("hello")
+    e_hello = run("hello")
     first = execution(e_hello)
     check("run-now: the execution is queued until its pod starts", first.get("status") == "queued",
-          f"HTTP {s} status={first.get('status')} {body[:200] if not e_hello else ''}")
-    job = job_for(kube, e_hello)
+          f"status={first.get('status')}")
+    job = cl.job_for(e_hello)
     jname = job["metadata"]["name"] if job else ""
-    env = {e["name"]: e.get("value") for e in (job or {}).get("spec", {}).get("template", {}).get("spec", {})
-           .get("containers", [{}])[0].get("env", [])}
-    check("run-now: a Kubernetes Job from the class's PodTemplate", bool(job) and env.get("KESTREL_ISOLATED_EXECUTION") == str(e_hello)
-          and job["spec"]["template"]["spec"]["serviceAccountName"] == "kestrel-isolated-default"
-          and job["spec"]["template"]["spec"]["restartPolicy"] == "Never", jname)
+    pod = (job or {}).get("spec", {}).get("template", {}).get("spec", {})
+    env = {e["name"]: e.get("value") for e in pod.get("containers", [{}])[0].get("env", [])}
+    check("run-now: a Kubernetes Job from the class's PodTemplate",
+          bool(job) and env.get("KESTREL_ISOLATED_EXECUTION") == str(e_hello)
+          and pod.get("serviceAccountName") == "kestrel-isolated-default" and pod.get("restartPolicy") == "Never", jname)
     check("run-now: the queued execution belongs to the Job's server UUID",
-          first.get("serverUUID") == fake_kube.server_uuid("kestrel", jname), f"{first.get('serverUUID')} vs {jname}")
+          first.get("serverUUID") == sid(jname), f"{first.get('serverUUID')} vs {jname}")
 
-    # start the others while the first pod boots
-    e_secure, *_ = run("secure", {"pw": "s3cret-" + tag})
-    e_fails, *_ = run("fails")
-    e_sleepy_q, *_ = run("sleepy")
-    s, body = call(api, f"/api/{API}/execution/{e_sleepy_q}/abort", "POST", headers=T)
+    # the others queue up while the first pod starts
+    e_secure = run("secure", {"pw": "s3cret-" + tag})
+    e_fails = run("fails")
+    e_retry = run("retry")
+    e_queued_abort = run("sleepy")
+    s, body = call(api, f"/api/{API}/execution/{e_queued_abort}/abort", "POST", headers=T)
     check("abort while queued: accepted", s == 200 and json.loads(body).get("abort", {}).get("status") in ("pending", "aborted"),
-          body[:200])
-    e_pool, *_ = run("pool")
+          body[:160])
+    e_pool = run("pool")
+    e_aws = {c: run(f"awsid-{c}") for c in ("default", "probe")} if m2c.EKS else {}
 
-    status = m2c.wait_done(api, T, e_hello, limit=400)
+    status = done(e_hello)
     elapsed = time.time() - t0
     out = output(e_hello)
-    check("run-now: succeeded in its own pod", status == "succeeded" and f"pod={jname}" in out
-          and fake_kube.server_uuid("kestrel", jname) in out and "role=isolated" in out, f"{status}; {out.strip()[:200]}")
     after = execution(e_hello)
-    pods = state(kube)["pods"].get(jname, [])
+    check("run-now: succeeded in its own pod", status == "succeeded" and sid(jname) in out
+          and after.get("serverUUID") == sid(jname), f"{status}; {out.strip()[:200]}")
+    check("run-now: the pod's environment is the isolated role", f"pod={jname}" in out and "role=isolated" in out,
+          out.strip()[:200])
+    wait_for(lambda: cl.job_result(jname), 120)
     check("run-now: the pod exited 0 and the Job is Complete",
-          [x["exit"] for x in pods] == [0] and wait_for(lambda: "job complete " + jname in str(state(kube)["events"]), 60),
-          str([x["exit"] for x in pods]))
-    print(f"      queued -> succeeded in {elapsed:.0f} s (local JVM boot); "
-          f"dateStarted moved by {(after.get('date-started', {}).get('unixtime', 0) - first.get('date-started', {}).get('unixtime', 0)) / 1000:.0f} s")
+          cl.pod_exits(jname) == [0] and cl.job_result(jname) == "Complete", f"{cl.pod_exits(jname)} {cl.job_result(jname)}")
+    queued_s = (after.get("date-started", {}).get("unixtime", 0) - first.get("date-started", {}).get("unixtime", 0)) / 1000
+    print(f"      queued {queued_s:.0f} s (pod scheduling + application start), run-now to done {elapsed:.0f} s")
+    TIMES.append(("run-now queued (class default)", queued_s))
 
-    pool_status = m2c.wait_done(api, T, e_pool, limit=120)
-    check("pool job: runs on the web pod, no Job", pool_status == "succeeded" and job_for(kube, e_pool) is None
-          and WEB_UUID in output(e_pool), pool_status)
+    check("pool job: runs on a web pod, no Job", done(e_pool, 180) == "succeeded" and cl.job_for(e_pool) is None
+          and execution(e_pool).get("serverUUID") in cl.web_uuids, execution(e_pool).get("serverUUID"))
+
+    # ---- IAM: each class's pod runs with its own role (EKS Pod Identity)
+    if m2c.EKS:
+        roles = cl.role_names()
+        for c, eid in e_aws.items():
+            st = done(eid)
+            out = output(eid)
+            check(f"IAM: a class-{c} pod runs as its own role", st == "succeeded" and f"assumed-role/{roles[c]}/" in out,
+                  f"{st}; {out.strip()[:160]}")
 
     # ---- secure options via a Secret owned by the Job
-    status = m2c.wait_done(api, T, e_secure, limit=400)
-    sjob = job_for(kube, e_secure)
-    secret = state(kube)["objects"].get(f"/api/v1/namespaces/kestrel/secrets/{sjob['metadata']['name']}") if sjob else None
+    sjob = cl.job_for(e_secure)
+    secret = wait_for(lambda: cl.secret(sjob["metadata"]["name"]) if sjob else None, 30)
+    status = done(e_secure)
     import hashlib
     want = hashlib.sha256(("s3cret-" + tag).encode()).hexdigest()[:12]
     check("secure option: reaches the pod through a Secret the Job owns",
-          status == "succeeded" and f"pw-sha={want}" in output(e_secure) and secret
-          and secret["metadata"]["ownerReferences"][0]["uid"] == sjob["metadata"]["uid"], f"{status}")
+          status == "succeeded" and f"pw-sha={want}" in output(e_secure) and bool(secret)
+          and secret["metadata"]["ownerReferences"][0]["uid"] == sjob["metadata"]["uid"], status)
     check("secure option: the value is not in the Job spec", ("s3cret-" + tag) not in json.dumps(sjob))
 
-    # ---- failure: Job fails without a retry
-    status = m2c.wait_done(api, T, e_fails, limit=400)
-    fjob = job_for(kube, e_fails)
-    fname = fjob["metadata"]["name"] if fjob else ""
-    wait_for(lambda: f"job failed {fname}" in str(state(kube)["events"]), 60)
-    check("failure: execution failed, pod exit 3, Job Failed with no retry",
-          status == "failed" and [x["exit"] for x in state(kube)["pods"].get(fname, [])] == [3]
-          and f"job failed {fname} (exit 3)" in str(state(kube)["events"]), f"{status} {state(kube)['pods'].get(fname)}")
+    # ---- failure: the Job fails without a retry
+    status = done(e_fails)
+    fname = cl.job_for(e_fails)["metadata"]["name"]
+    wait_for(lambda: cl.job_result(fname), 120)
+    check("failure: execution failed, pod exit 3, Job Failed without a retry",
+          status == "failed" and cl.pod_exits(fname) == [3] and cl.job_result(fname) == "Failed",
+          f"{status} {cl.pod_exits(fname)} {cl.job_result(fname)}")
 
-    # ---- abort before the pod started
-    status = m2c.wait_done(api, T, e_sleepy_q, limit=400)
-    check("abort while queued: the pod ends it as aborted without running it",
-          status == "aborted" and "sleepy-started" not in output(e_sleepy_q), status)
+    # ---- a retry runs in the same pod, which waits for it
+    status = done(e_retry)
+    rname = cl.job_for(e_retry)["metadata"]["name"]
+    retried = execution(e_retry).get("retriedExecution") or {}
+    second = done(retried.get("id"), 180) if retried.get("id") else None
+    wait_for(lambda: cl.job_result(rname), 180)
+    check("retry: the retry runs in the same pod; the pod exits 3 only after it",
+          status == "failed-with-retry" and second == "failed"
+          and execution(retried["id"]).get("serverUUID") == sid(rname) and cl.pod_exits(rname) == [3],
+          f"{status} -> {second}; exits={cl.pod_exits(rname)}")
+
+    # ---- aborted while queued: its pod starts, finds it ended, never runs it
+    qname = cl.job_for(e_queued_abort)["metadata"]["name"]
+    wait_for(lambda: cl.job_result(qname), 400)
+    check("abort while queued: the pod ends it aborted without running it",
+          "sleepy-started" not in output(e_queued_abort) and execution(e_queued_abort).get("status") == "aborted"
+          and cl.pod_exits(qname) == [3], f"{execution(e_queued_abort).get('status')} exits={cl.pod_exits(qname)}")
 
     # ---- abort while running (cross-pod abort)
-    e_sleepy, *_ = run("sleepy")
-    wait_for(lambda: "sleepy-started" in output(e_sleepy), 400)
+    e_sleepy = run("sleepy")
+    wait_for(lambda: "sleepy-started" in output(e_sleepy), 600)
     t1 = time.time()
     call(api, f"/api/{API}/execution/{e_sleepy}/abort", "POST", headers=T)
-    status = m2c.wait_done(api, T, e_sleepy, limit=60)
-    check("abort while running: the isolated pod stops it", status == "aborted", f"{status} after {time.time() - t1:.0f} s")
+    status = done(e_sleepy, 60)
+    aname = cl.job_for(e_sleepy)["metadata"]["name"]
+    wait_for(lambda: cl.job_result(aname), 120)
+    check("abort while running: the isolated pod stops the run", status == "aborted"
+          and "sleepy-done" not in output(e_sleepy) and execution(e_sleepy).get("status") == "aborted"
+          and cl.pod_exits(aname) == [3], f"{execution(e_sleepy).get('status')} after {time.time() - t1:.0f} s, "
+                                          f"exits={cl.pod_exits(aname)}")
 
-    # ---- a pod killed mid-run: retried pod never runs the execution twice
-    e_killed, *_ = run("killed")
-    wait_for(lambda: "killed-started" in output(e_killed), 400)
-    kjob = job_for(kube, e_killed)
-    kname = kjob["metadata"]["name"]
-    check("pod loss: killed mid-run", kube.kill_pod(kname))
-    status = m2c.wait_done(api, T, e_killed, limit=400)
-    wait_for(lambda: f"job failed {kname}" in str(state(kube)["events"]) or f"job complete {kname}" in str(state(kube)["events"]), 120)
-    attempts = state(kube)["pods"].get(kname, [])
-    check("pod loss: the retry pod ends the run instead of running it again",
-          len(attempts) == 2 and status in ("aborted", "failed", "incomplete", "other")
-          and output(e_killed).count("killed-started") == 1, f"{status} attempts={[x['exit'] for x in attempts]}")
+    # ---- a pod lost mid-run: the retried pod never runs the execution twice
+    e_killed = run("killed")
+    wait_for(lambda: "killed-started" in output(e_killed), 600)
+    kname = cl.job_for(e_killed)["metadata"]["name"]
+    check("pod loss: the pod is killed mid-run", cl.kill_pod(kname))
+    status = done(e_killed, 600)
+    wait_for(lambda: cl.job_result(kname), 400)
+    exits = cl.pod_exits(kname)
+    check("pod loss: the replacement pod ends the run instead of running it again",
+          len(exits) == 2 and exits[-1] == 3 and status not in ("succeeded", "running", "queued")
+          and output(e_killed).count("killed-started") == 1, f"{status} exits={exits}")
+
+    # ---- a Job deleted before its pod ran: the sweeper ends the queued execution
+    e_swept = run("swept")
+    sname = cl.job_for(e_swept)["metadata"]["name"]
+    cl.delete_job(sname)
+    t2 = time.time()
+    status = done(e_swept, 420)
+    check("sweeper: a queued run whose Job is gone ends incomplete", status not in ("queued", "running", "succeeded")
+          and "swept-must-not-run" not in output(e_swept), f"{status} after {time.time() - t2:.0f} s")
 
     # ---- run later is refused
     s, body = call(api, f"/api/{API}/job/{u['hello']}/run", "POST",
-                   json.dumps({"runAtTime": time.strftime("%Y-%m-%dT%H:%M:%S.000+0000", time.gmtime(time.time() + 600))}), headers=T)
-    check("run later: refused for an isolated job", s != 200 or "not supported" in body, f"HTTP {s} {body[:200]}")
+                   json.dumps({"runAtTime": time.strftime("%Y-%m-%dT%H:%M:%S.000+0000", time.gmtime(time.time() + 600))}),
+                   headers=T)
+    check("run later: refused for an isolated job", s != 200 and "not supported" in body, f"HTTP {s} {body[:160]}")
 
-    # ---- scheduled: its own CronJob, one run per firing, in the probe class. One firing only
-    # (a fixed minute, UTC), since every firing boots a JVM here.
+    # ---- scheduled: its own CronJob, one run per firing, in the probe class; one firing (a
+    # fixed minute, UTC) locally, where every firing boots a JVM
     at = time.gmtime(time.time() + 150)
+    cron = "0 0/1 * ? * * *" if m2c.EKS else f"0 {at.tm_min} {at.tm_hour} ? * * *"
     sched_yaml = lambda cls: job_yaml("sched", u["sched"], cls, 'echo "scheduled server=$RD_JOB_SERVERUUID"',
-                                      schedule=f"  timeZone: UTC\n  schedule:\n    crontab: '0 {at.tm_min} {at.tm_hour} ? * * *'\n")
+                                      schedule=f"  timeZone: UTC\n  schedule:\n    crontab: '{cron}'\n")
     s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&uuidOption=preserve", "POST",
                    sched_yaml("probe"), headers=T, ctype="application/yaml")
-    check("schedule: isolated job imported", s == 200 and '"succeeded":[{' in body, body[:200])
-    def cronjob():
-        for path, o in state(kube)["objects"].items():
-            if "/cronjobs/" in path and o["metadata"].get("labels", {}).get("kestrel.io/job") == u["sched"]:
-                return o
-    cj = wait_for(cronjob, 90)
-    cj_name = cj["metadata"]["name"] if cj else None
+    check("schedule: isolated job imported", s == 200 and '"succeeded":[{' in body, body[:160])
+    cj = wait_for(lambda: cl.cronjob_for(u["sched"]), 90)
+    cj_name = cj["metadata"]["name"] if cj else ""
+    want_cron = "*/1 * * * *" if m2c.EKS else f"{at.tm_min} {at.tm_hour} * * *"
     check("schedule: the isolated job gets its own CronJob (probe class)", bool(cj)
-          and cj["spec"]["schedule"] == f"{at.tm_min} {at.tm_hour} * * *" and cj["spec"]["timeZone"] == "UTC"
+          and cj["spec"]["schedule"] == want_cron and cj["spec"]["timeZone"] == "UTC"
           and cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]["serviceAccountName"] == "kestrel-isolated-probe",
           cj_name)
-    buckets = [o for path, o in state(kube)["objects"].items() if "/cronjobs/" in path
-               and o["metadata"].get("labels", {}).get("app.kubernetes.io/component") == "trigger"]
-    check("schedule: no pool bucket CronJob for it", not buckets, str([b["metadata"]["name"] for b in buckets]))
+    check("schedule: no pool bucket CronJob for it", not [b for b in cl.trigger_cronjobs()
+                                                          if b["spec"]["schedule"] == want_cron])
 
     def sched_execs():
         s, body = call(api, f"/api/{API}/job/{u['sched']}/executions?max=50", headers=T)
         return json.loads(body).get("executions", []) if s == 200 else []
-    done = wait_for(lambda: [e for e in sched_execs() if e.get("status") == "succeeded"], 420, 5)
-    fired_jobs = sorted({n for n in state(kube)["pods"] if cj_name and n.startswith(cj_name + "-")})
-    first_ok = done[0] if done else {}
-    check("schedule: a firing runs once, in the pod of that minute",
-          bool(done) and fired_jobs and first_ok.get("serverUUID") in {fake_kube.server_uuid("kestrel", n) for n in fired_jobs},
-          f"executions={len(sched_execs())} jobs={fired_jobs}")
-
-    # back to the pool: the CronJob goes away
-    s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&dupeOption=update&uuidOption=preserve", "POST",
-                   sched_yaml(None), headers=T, ctype="application/yaml")
-    gone = wait_for(lambda: cronjob() is None, 90)
-    check("schedule: switching the job to the pool deletes its CronJob", gone and s == 200)
-    # every minute that fired ran at most once
+    want_runs = 3 if m2c.EKS else 1
+    ok_runs = wait_for(lambda: len([e for e in sched_execs() if e.get("status") == "succeeded"]) >= want_runs,
+                       420 + 60 * want_runs, 5)
+    fired = cl.jobs_of(cj_name)
     execs = sched_execs()
-    per_pod = {}
+    by_server = {}
     for e in execs:
-        per_pod[e.get("serverUUID")] = per_pod.get(e.get("serverUUID"), 0) + 1
-    check("schedule: exactly one execution for the firing", len(execs) == 1 and list(per_pod.values()) == [1], str(per_pod))
+        by_server[e.get("serverUUID")] = by_server.get(e.get("serverUUID"), 0) + 1
+    check(f"schedule: {want_runs} firing(s), each run once in the pod of its minute",
+          ok_runs and set(by_server) <= {sid(n) for n in fired} and all(n == 1 for n in by_server.values()),
+          f"executions={len(execs)} by server={by_server} jobs={fired}")
+    starts = [(e["date-started"]["unixtime"] / 1000) % 60 for e in execs if e.get("date-started")]
+    if starts:
+        TIMES.append(("scheduled firing to start (s after the minute)", sum(starts) / len(starts)))
 
-    # every isolated pod exited; unexpected ERROR lines in pod logs
-    errors = []
-    for name, attempts in state(kube)["pods"].items():
-        for a in attempts:
-            with open(a["log"], errors="replace") as fh:
-                errors += [f"{name}: {ln.strip()[:160]}" for ln in fh if " ERROR " in ln
-                           and not any(x in ln for x in m2c.EXPECTED_ERRORS + ("Stale Execution cleaned up",))]
-    check("pods: no unexpected ERROR lines", not errors, "\n      ".join(errors[:8]))
-    with open(f"{BASE}/web.log", errors="replace") as fh:
-        web_errors = [ln.strip()[:160] for ln in fh if " ERROR " in ln and not any(x in ln for x in m2c.EXPECTED_ERRORS)]
+    s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&dupeOption=update&uuidOption=preserve",
+                   "POST", sched_yaml(None), headers=T, ctype="application/yaml")
+    gone = wait_for(lambda: cl.cronjob_for(u["sched"]) is None, 90)
+    check("schedule: switching the job to the pool deletes its CronJob", gone and s == 200)
+    call(api, f"/api/{API}/job/{u['sched']}/schedule/disable", "POST", headers=T)
+
+    errors = [e for e in cl.pod_errors() if not any(x in e for x in m2c.EXPECTED_ERRORS + ("Stale Execution cleaned up",))]
+    check("isolated pods: no unexpected ERROR lines", not errors, "\n      ".join(errors[:8]))
+    # expected on web: the sweeper ending the swept run, and upstream logging the refused run-later
+    web_errors = [e for e in cl.web_errors(since) if not any(x in e for x in m2c.EXPECTED_ERRORS + (
+        "Stale Execution cleaned up", "Unable to create execution"))]
     check("web: no unexpected ERROR lines", not web_errors, "\n      ".join(web_errors[:8]))
+    for name, value in TIMES:
+        print(f"      {name}: {value:.0f} s")
+
+
+TIMES = []
 
 
 if __name__ == "__main__":
