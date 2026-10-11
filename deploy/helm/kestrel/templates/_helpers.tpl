@@ -230,11 +230,13 @@ spec:
         - name: KESTREL_POD_NAME
           valueFrom: { fieldRef: { fieldPath: metadata.name } }
         {{- end }}
+        {{- if eq $.Values.storage.mode "rdbms" }}
         {{- with $.Values.database.existingSecret }}
         - name: RUNDECK_DATABASE_USERNAME
           valueFrom: { secretKeyRef: { name: {{ . }}, key: username } }
         - name: RUNDECK_DATABASE_PASSWORD
           valueFrom: { secretKeyRef: { name: {{ . }}, key: password } }
+        {{- end }}
         {{- end }}
         {{- with $.Values.keyStorage.existingSecret }}
         - name: RUNDECK_STORAGE_CONVERTER_1_CONFIG_PASSWORD

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run Kestrel locally in DynamoDB storage mode (ADR 0004), without EKS:
 #   - DynamoDB Local on :8000 (java -jar, started if not running)
-#   - the war CI built for a commit (artifact kestrel-war), on JDK 17, H2 for RDBMS-mapped classes
+#   - the war CI built for a commit (artifact kestrel-war), on JDK 17, with no RDBMS (M2d)
 # Usage: local-run.sh [commit]   (default HEAD). Stop with: kill $(cat /tmp/kestrel-local/rundeck.pid)
 set -euo pipefail
 COMMIT=$(git -C "$(dirname "$0")" rev-parse "${1:-HEAD}")

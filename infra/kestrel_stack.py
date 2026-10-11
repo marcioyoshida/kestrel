@@ -1,6 +1,6 @@
 """Kestrel reference environment (M0) — ADR 0001.
 
-One stack: VPC, EKS Auto Mode cluster, RDS PostgreSQL (until M2 moves to DynamoDB), S3 log
+One stack: VPC, EKS Auto Mode cluster, DynamoDB access (RDS PostgreSQL only with rdbms=True), S3 log
 bucket, internal ALB + target group (bound to pods by a TargetGroupBinding in the Helm chart),
 CloudFront with a VPC origin, and a Cognito user pool as the default OIDC provider.
 
@@ -44,7 +44,7 @@ CLOUDFRONT_ORIGIN_FACING_PL = "pl-3b927c52"  # com.amazonaws.global.cloudfront.o
 
 class KestrelStack(Stack):
     def __init__(self, scope: Construct, cid: str, *, admin_principal_arn: str, ephemeral: bool = False,
-                 **kw) -> None:
+                 rdbms: bool = False, **kw) -> None:
         super().__init__(scope, cid, **kw)
         Tags.of(self).add("project", "kestrel")
         # ephemeral: validation runs; `cdk destroy` leaves nothing behind (no bucket, pool or snapshot).
@@ -210,28 +210,11 @@ class KestrelStack(Stack):
                      "dynamodb:DeleteItem")
         runner_role.add_to_policy(data_tables)
 
-        # ---------------------------------------------------------------- database (M0–M1 only)
-        db_sg = ec2.SecurityGroup(self, "DbSg", vpc=vpc, description="Kestrel RDS", allow_all_outbound=False)
-        ec2.CfnSecurityGroupIngress(
-            self, "DbFromCluster", group_id=db_sg.security_group_id, ip_protocol="tcp",
-            from_port=5432, to_port=5432, source_security_group_id=cluster_sg_id,
-            description="EKS Auto Mode nodes/pods")
-        db = rds.DatabaseInstance(
-            self, "Db",
-            engine=rds.DatabaseInstanceEngine.postgres(version=rds.PostgresEngineVersion.VER_17),
-            instance_type=ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
-            vpc=vpc,
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED),
-            security_groups=[db_sg],
-            database_name="kestrel",
-            credentials=rds.Credentials.from_generated_secret("kestrel"),
-            allocated_storage=20,
-            storage_type=rds.StorageType.GP3,
-            storage_encrypted=True,
-            multi_az=False,
-            backup_retention=Duration.days(1),
-            removal_policy=RemovalPolicy.DESTROY if ephemeral else RemovalPolicy.SNAPSHOT,
-        )
+        # ---------------------------------------------------------------- database (rdbms storage only)
+        # M2d: storage.mode=dynamodb (the default) needs no RDBMS. rdbms=True keeps upstream's mode.
+        db = None
+        if rdbms:
+            db = self._database(vpc, cluster_sg_id, ephemeral)
 
         # ---------------------------------------------------------------- internal ALB
         alb_sg = ec2.SecurityGroup(self, "AlbSg", vpc=vpc, description="Kestrel internal ALB")
@@ -343,11 +326,35 @@ class KestrelStack(Stack):
             "FireDlqUrl": fires_dlq.queue_url,
             "FireLedgerTable": ledger.table_name,
             "DataTablePrefix": DATA_TABLE_PREFIX,
-            "DbEndpoint": db.db_instance_endpoint_address,
-            "DbSecretArn": db.secret.secret_arn,
+            **({"DbEndpoint": db.db_instance_endpoint_address, "DbSecretArn": db.secret.secret_arn} if db else {}),
             "OidcIssuer": f"https://cognito-idp.{self.region}.amazonaws.com/{pool.user_pool_id}",
             "UserPoolId": pool.user_pool_id,
             "ClientId": client.user_pool_client_id,
             "CognitoDomain": domain.base_url(),
         }.items():
             CfnOutput(self, k, value=v)
+
+    def _database(self, vpc, cluster_sg_id: str, ephemeral: bool) -> rds.DatabaseInstance:
+        """RDS PostgreSQL for storage.mode=rdbms (upstream's storage; M0-M2c reference runs)."""
+        db_sg = ec2.SecurityGroup(self, "DbSg", vpc=vpc, description="Kestrel RDS", allow_all_outbound=False)
+        ec2.CfnSecurityGroupIngress(
+            self, "DbFromCluster", group_id=db_sg.security_group_id, ip_protocol="tcp",
+            from_port=5432, to_port=5432, source_security_group_id=cluster_sg_id,
+            description="EKS Auto Mode nodes/pods")
+        db = rds.DatabaseInstance(
+            self, "Db",
+            engine=rds.DatabaseInstanceEngine.postgres(version=rds.PostgresEngineVersion.VER_17),
+            instance_type=ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
+            vpc=vpc,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED),
+            security_groups=[db_sg],
+            database_name="kestrel",
+            credentials=rds.Credentials.from_generated_secret("kestrel"),
+            allocated_storage=20,
+            storage_type=rds.StorageType.GP3,
+            storage_encrypted=True,
+            multi_az=False,
+            backup_retention=Duration.days(1),
+            removal_policy=RemovalPolicy.DESTROY if ephemeral else RemovalPolicy.SNAPSHOT,
+        )
+        return db

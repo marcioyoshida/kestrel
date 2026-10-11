@@ -150,6 +150,18 @@ class JobStateService implements AuthorizingJobService {
             if(state){
                 eq('status', state)
             }
+            if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+                // Kestrel (M2d): no createAlias outside Hibernate; an execution carries its job's uuid
+                if(jobUuid){
+                    eq 'jobUuid', jobUuid
+                }
+                if(excludeJobUuid){
+                    or{
+                        isNull('jobUuid')
+                        ne 'jobUuid', excludeJobUuid
+                    }
+                }
+            } else {
             createAlias('scheduledExecution', 'se')
             if(jobUuid){
                 isNotNull 'scheduledExecution'
@@ -160,6 +172,7 @@ class JobStateService implements AuthorizingJobService {
                     isNull('scheduledExecution')
                     ne 'se.uuid',excludeJobUuid
                 }
+            }
             }
             if(since){
                 long timeAgo = Sizes.parseTimeDuration(since,TimeUnit.MILLISECONDS)

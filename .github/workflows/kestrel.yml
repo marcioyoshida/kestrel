@@ -97,6 +97,7 @@ jobs:
           npm install -g "aws-cdk@${CDK_VERSION}"
           cdk synth -q -c ephemeral=true && .venv/bin/python check_templates.py cdk.out
           cdk synth -q && .venv/bin/python check_templates.py cdk.out
+          cdk synth -q -c rdbms=true && .venv/bin/python check_templates.py cdk.out
 
   trigger:
     name: Trigger (Go)
@@ -205,6 +206,20 @@ jobs:
         with:
           name: kestrel-war
           path: rundeckapp/build/libs/rundeck-*.war
+          retention-days: 3
+          compression-level: 0
+      # The image, for upstream's API functional suite (kestrel-api-suite.yml).
+      - name: Save the image
+        env:
+          REPO: ${{ vars.KESTREL_ECR_REPOSITORY || 'kestrel' }}
+        run: |
+          docker tag "$REPO:${GITHUB_SHA::12}" kestrel:ci
+          docker save kestrel:ci | gzip -1 > kestrel-image.tar.gz
+          ls -lh kestrel-image.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kestrel-image
+          path: kestrel-image.tar.gz
           retention-days: 3
           compression-level: 0
       - name: AWS credentials (OIDC)

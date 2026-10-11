@@ -4706,6 +4706,20 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
         if(se.isEmpty()) return [:]
         Date now = new Date()
         Map item = [:]
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            // Kestrel (M2d): not-yet-completed executions come from the sparse dateCompleted index
+            Map<String, Long> idByUuid = se.collectEntries { [(it.uuid): it.id] }
+            Execution.createCriteria().list {
+                isNull('dateCompleted')
+                gt('dateStarted', now)
+            }.each { Execution e ->
+                Long seId = idByUuid[e.jobUuid]
+                if (seId != null) {
+                    item[seId] = new Date(e.dateStarted.time)
+                }
+            }
+            return item
+        }
         // Grails 7/Hibernate 6: Use HQL for LEFT OUTER JOIN - most reliable for complex queries
         String hql = '''
             SELECT se.id, e.dateStarted
@@ -4926,7 +4940,7 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
      * @return
      */
     List<ScheduledExecution> getSchedulesJobToClaim(String toServerUUID, String fromServerUUID, boolean selectAll, String projectFilter, List<String> jobids, ignoreInnerScheduled = false) {
-        if(featureService.featurePresent("enhancedJobTakeoverQuery")) {
+        if(featureService.featurePresent("enhancedJobTakeoverQuery") && !org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
             log.info("Using enhanced job takeover query")
             List<ScheduledExecution> jobList = []
             NamedParameterJdbcTemplate jdbcTemplate = new NamedParameterJdbcTemplate(dataSource)
@@ -5003,7 +5017,9 @@ class ScheduledExecutionService implements ApplicationContextAware, Initializing
             isNull('dateCompleted')
             gt('dateStarted', new Date())
 
-            if(jobids){
+            if(jobids && org.rundeck.kestrel.app.KestrelStorage.isDynamo()){
+                'in'('jobUuid', jobids)  // Kestrel (M2d): no createAlias outside Hibernate
+            } else if(jobids){
                 createAlias('scheduledExecution', 'se')
                 or {
                     for(def partition : Lists.partition(jobids, 1000)){

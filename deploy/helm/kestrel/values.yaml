@@ -46,9 +46,9 @@ web:
   extraEnv: []       # list of EnvVar
   topologySpreadConstraints: []
 
-# Persistence (ADR 0004). dynamodb = the classes migrated so far (M2b: projects, users, tokens,
-# webhooks, plugin metadata, stored events, key/config storage) live in DynamoDB; the rest still
-# uses database.*. Tables are created on demand under tablePrefix (IAM must allow <prefix>-*).
+# Persistence (ADR 0004). dynamodb = every domain class lives in DynamoDB and there is no RDBMS
+# (database.* is ignored). Tables are created at startup under tablePrefix (IAM must allow
+# <prefix>-*). rdbms = upstream's storage through database.*.
 storage:
   mode: rdbms
   dynamodb:
@@ -70,7 +70,8 @@ serviceAccount:
   roleArn: ""
 
 database:
-  # JDBC to RDS (Aurora PostgreSQL recommended for M0/M1). Replaced by DynamoDB in M2.
+  # storage.mode=rdbms only: JDBC to RDS (upstream's storage). Ignored with storage.mode=dynamodb,
+  # where the app has no RDBMS at all (M2d).
   url: ""            # jdbc:postgresql://host:5432/kestrel
   driver: org.postgresql.Driver
   # Secret with keys `username` and `password` (External Secrets / Secrets Store CSI).

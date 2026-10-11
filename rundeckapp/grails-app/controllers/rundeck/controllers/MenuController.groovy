@@ -911,7 +911,7 @@ class MenuController extends ControllerBase implements ApplicationContextAware{
     @RdAuthorizeSystem(value = RundeckAccess.System.AUTH_READ_OR_ANY_ADMIN, description = 'Read System Configuration')
     def systemConfig(){
 
-        if(!grailsApplication.config.dataSource.jndiName &&
+        if(!grailsApplication.config.dataSource.jndiName && !org.rundeck.kestrel.app.KestrelStorage.isDynamo() &&
                 grailsApplication.config.dataSource.driverClassName=='org.h2.Driver'){
             flash.error=message(code: "development.mode.warning")
         }
@@ -1662,7 +1662,7 @@ class MenuController extends ControllerBase implements ApplicationContextAware{
 
     @RdAuthorizeSystem(RundeckAccess.System.AUTH_READ_OR_OPS_ADMIN)
     def systemInfo (){
-        if(!grailsApplication.config.dataSource.jndiName &&
+        if(!grailsApplication.config.dataSource.jndiName && !org.rundeck.kestrel.app.KestrelStorage.isDynamo() &&
                 grailsApplication.config.dataSource.driverClassName=='org.h2.Driver'){
             flash.error=message(code: "development.mode.warning")
         }

@@ -1053,10 +1053,17 @@ beans={
 
 
     // Activate Spring Actuator DataSourceHealthIndicator with a Rundeck specific bean name `rundeckDataSourceHealthIndicator`
+    if (KestrelStorage.isDynamo()) {
+        // Kestrel (M2d): the datasource is an in-memory placeholder; readiness checks DynamoDB.
+        rundeckDataSourceHealthIndicator(org.rundeck.kestrel.app.DynamoHealthIndicator) {
+            datastore = ref('kestrelDynamoDatastore')
+        }
+    } else {
     rundeckDataSourceHealthIndicator(DataSourceHealthIndicator) {
         dataSource = ref("dataSource")
         // Get the validation query from config, if not provided the Spring DataSourceHealthIndicator will use the Connection.isValid() to test the database connection.
         query = grailsApplication.config.getProperty("rundeck.health.databaseValidationQuery")
+    }
     }
 
     rundeckConfig(RundeckConfig)

@@ -154,7 +154,13 @@ class ExecutionsCleanUp implements InterruptableJob {
 
         Date endDate = ExecutionQuery.parseRelativeDate("${maxDaysToKeep}d", null)
 
-        List<Long> jobList = Execution.executeQuery(
+        List<Long> jobList = org.rundeck.kestrel.app.KestrelStorage.isDynamo() ?
+            Execution.createCriteria().list(max: maximumDeletionSize) {  // Kestrel (M2d): no HQL
+                projections { property('id') }
+                eq('project', project)
+                le('dateCompleted', endDate)
+            } as List<Long> :
+            Execution.executeQuery(
             """select e.id from Execution e 
                where e.project = :project 
                and e.dateCompleted <= :endDate""",
@@ -219,6 +225,9 @@ class ExecutionsCleanUp implements InterruptableJob {
     }
 
     private int totalAllExecutions(String project){
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            return Execution.countByProject(project)  // Kestrel (M2d): no HQL
+        }
         Integer total = Execution.executeQuery(
                 "select count(e.id) from Execution e where e.project = :project",
                 [project: project]

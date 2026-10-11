@@ -33,6 +33,8 @@ grep -q 'RUNDECK_PLUGIN_EXECUTIONFILESTORAGE_NAME: "kestrel-s3"' <<<"$kout"
 grep -q 'RUNDECK_EXECUTION_LOGS_FILESTORAGE_CHECKPOINT_TIME_INTERVAL: "5s"' <<<"$kout"
 ! grep -q 'fetch-plugins' <<<"$kout"   # bundled log store: no plugin download
 grep -q 'KESTREL_DYNAMODB_PREFIX: "kestrel-ref"' <<<"$kout"
+! grep -q 'RUNDECK_DATABASE_' <<<"$kout"                         # dynamodb mode: no RDBMS (M2d)
+helm template kestrel . -n kestrel "${K8S_REF[@]}" --set database.url= --set database.existingSecret= >/dev/null
 ! grep -q 'RUNDECK_SERVER_UUID:' <<<"$kout"                      # per-pod UUIDs, never a shared one
 [ "$(grep -c 'exec docker-lib/entry.sh' <<<"$kout")" -eq 2 ]     # web + runner derive their UUID
 [ "$(grep -c 'name: auth-proxy' <<<"$kout")" -eq 1 ]             # sign-in sidecar on web only

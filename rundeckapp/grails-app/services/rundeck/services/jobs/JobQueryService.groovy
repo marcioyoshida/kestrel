@@ -28,6 +28,9 @@ class JobQueryService implements JobQuery {
 class LocalJobQueryService {
 
     Map extendCriteria(JobQueryInput input, Map params, Object delegate) {
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            return extendCriteriaPortable(input, params, delegate)
+        }
         def restr = Restrictions.conjunction()
         ScheduledExecutionQuery.IS_SCHEDULED_FILTER.each { key, val ->
             if(null!=input["${key}Filter"]){
@@ -48,6 +51,44 @@ class LocalJobQueryService {
         }
         //this returns an empty map since schedules is already considered as part of the attributes to show as part of the search
         //ergo, no need to add new values
+        return [:]
+    }
+
+    /**
+     * Kestrel (M2d): the same filter in GORM's criteria DSL, for the DynamoDB datastore (Hibernate
+     * Restrictions and Subqueries only apply to Hibernate criteria). Jobs with a run-later execution
+     * come from the sparse index of executions that have not completed.
+     */
+    private Map extendCriteriaPortable(JobQueryInput input, Map params, Object delegate) {
+        Map<String, Object> scheduled = [:]
+        ScheduledExecutionQuery.IS_SCHEDULED_FILTER.each { key, val ->
+            if(null!=input["${key}Filter"]){
+                scheduled[val] = input["${key}Filter"]
+            }
+        }
+        if(params.runJobLaterFilter){
+            Date now = new Date()
+            Set<String> later = Execution.createCriteria().list {
+                isNull('dateCompleted')
+                gt('dateStarted', now)
+            }*.jobUuid.findAll { it } as Set
+            if (!later && !scheduled) {
+                delegate.eq('id', -1L)  // nothing matches, like an EXISTS with no rows
+            } else {
+                delegate.or {
+                    if (later) {
+                        'in'('uuid', later)
+                    }
+                    if (scheduled) {
+                        and {
+                            scheduled.each { prop, value -> eq(prop, value) }
+                        }
+                    }
+                }
+            }
+        } else {
+            scheduled.each { prop, value -> delegate.eq(prop, value) }
+        }
         return [:]
     }
 

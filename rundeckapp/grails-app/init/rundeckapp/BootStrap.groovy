@@ -553,7 +553,14 @@ class BootStrap {
              }
              fileUploadService.onBootstrap()
 
-            if(grailsApplication.config.getProperty("dataSource.driverClassName",String.class,'')=='org.h2.Driver'){
+            if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+                def onHibernate = org.rundeck.kestrel.app.KestrelStorage.notOnDynamo(grailsApplication.getArtefacts('Domain')*.clazz)
+                if (onHibernate) {
+                    throw new IllegalStateException("KESTREL_STORAGE=dynamodb, but these domain classes are not stored in DynamoDB: " +
+                        "${onHibernate}. Their only database would be this pod's in-memory placeholder.")
+                }
+                log.info("Kestrel: all ${grailsApplication.getArtefacts('Domain').size()} domain classes are stored in DynamoDB; no RDBMS")
+            } else if(grailsApplication.config.getProperty("dataSource.driverClassName",String.class,'')=='org.h2.Driver'){
                 log.warn("[Development Mode] Usage of H2 database is recommended only for development and testing")
             }
             if(canApplyServerUpdates) {

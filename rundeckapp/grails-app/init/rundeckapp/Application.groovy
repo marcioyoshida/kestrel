@@ -251,7 +251,26 @@ class Application extends GrailsAutoConfiguration implements EnvironmentAware {
         }
         loadGroovyRundeckConfigIfExists(environment)
         removeGORMdbCreateProperty(environment)
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
+            environment.propertySources.addFirst(new MapPropertySource("kestrel-dynamodb-no-rdbms", KESTREL_NO_RDBMS))
+        }
     }
+
+    /**
+     * Kestrel (ADR 0004, M2d): with KESTREL_STORAGE=dynamodb every domain class lives in DynamoDB.
+     * The Hibernate plugin stays (upstream services are @Transactional through its transaction
+     * manager) but maps nothing, so its datasource is a private in-memory H2 with no schema: no
+     * RDS, no Liquibase, and a leftover SQL query fails with "table not found" instead of reading a
+     * shared database. Highest precedence, over rundeck-config and RUNDECK_DATABASE_*.
+     */
+    static final Map<String, Object> KESTREL_NO_RDBMS = [
+        'dataSource.url'                                : 'jdbc:h2:mem:kestrel;DB_CLOSE_DELAY=-1',
+        'dataSource.driverClassName'                    : 'org.h2.Driver',
+        'dataSource.username'                           : 'sa',
+        'dataSource.password'                           : '',
+        'dataSource.dbCreate'                           : 'none',
+        'grails.plugin.databasemigration.updateOnStart' : false,
+    ].asImmutable()
 
     /**
      * It sets dataSource.dbCreate as 'none', always
@@ -273,7 +292,7 @@ class Application extends GrailsAutoConfiguration implements EnvironmentAware {
 
     @Override
     void doWithApplicationContext() {
-        if(rundeckConfig.isRollback()) {
+        if(rundeckConfig.isRollback() && !org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
             RundeckDbMigration rundeckDbMigration = new RundeckDbMigration(applicationContext)
             println "Beginning db rollback to ${rundeckConfig.tagName()}"
             rundeckDbMigration.rollback(rundeckConfig.tagName())

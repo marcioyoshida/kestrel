@@ -4,6 +4,7 @@
 - KestrelCi: ECR + GitHub OIDC push role. Persistent, near-zero cost.
 - KestrelRef: the reference environment. Deploy with `-c ephemeral=true` for validation runs so
   `cdk destroy` removes everything (log bucket, user pool, database without a final snapshot).
+  No RDS unless `-c rdbms=true` (storage.mode=rdbms; the default dynamodb mode needs none, M2d).
 """
 import aws_cdk as cdk
 
@@ -19,5 +20,6 @@ KestrelStack(
     admin_principal_arn=app.node.try_get_context("adminPrincipalArn")
     or "arn:aws:iam::668449743071:user/user_console",
     ephemeral=str(app.node.try_get_context("ephemeral")).lower() == "true",
+    rdbms=str(app.node.try_get_context("rdbms")).lower() == "true",
 )
 app.synth()

@@ -24,6 +24,7 @@ import org.grails.datastore.gorm.GormEnhancer
 import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 
 /**
  * GORM datastore on DynamoDB (ADR 0004). Reuses GORM's simple datastore for the GORM plumbing
@@ -76,6 +77,14 @@ class DynamoDatastore extends SimpleMapDatastore {
         // withTransaction takes getCurrentSession(): inside a Hibernate transaction that is the
         // transaction's shared session, so code around withTransaction sees the same instances.
         ((DatastoreTransactionManager) transactionManager).datastoreManagedSession = true
+    }
+
+    /**
+     * Readiness check (the datastore is the app's only database): one GetItem on the id-block
+     * table. A data-plane read, so frequent probes stay cheap and within DynamoDB's API limits.
+     */
+    void ping() {
+        client.getItem { it.tableName(tables.idsTable()).key([k: AttributeValue.fromS('--ping')]) }
     }
 
     /**

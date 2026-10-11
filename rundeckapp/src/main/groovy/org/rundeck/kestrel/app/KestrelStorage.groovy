@@ -1,6 +1,9 @@
 package org.rundeck.kestrel.app
 
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
+import org.grails.datastore.gorm.GormEnhancer
+import org.rundeck.kestrel.gorm.dynamodb.DynamoDatastore
 
 /**
  * Where domain classes are persisted (ADR 0004). {@code KESTREL_STORAGE=dynamodb} maps the classes
@@ -44,5 +47,21 @@ class KestrelStorage {
     /** @return the {@code mapWith} value for a class Kestrel can store in DynamoDB */
     static String mapWith() {
         isDynamo() ? 'dynamodb' : 'hibernate'
+    }
+
+    /**
+     * In DynamoDB mode the RDBMS is a pod-local, in-memory placeholder (M2d), so a domain class
+     * left on Hibernate would keep its rows in one pod's memory. Bootstrap fails on any of these.
+     * @return names of the domain classes whose GORM datastore is not DynamoDB
+     */
+    @CompileDynamic
+    static List<String> notOnDynamo(Collection<Class> domainClasses) {
+        domainClasses.findAll { Class c ->
+            try {
+                !(GormEnhancer.findDatastore(c) instanceof DynamoDatastore)
+            } catch (IllegalStateException ignored) {
+                true
+            }
+        }*.name.sort()
     }
 }

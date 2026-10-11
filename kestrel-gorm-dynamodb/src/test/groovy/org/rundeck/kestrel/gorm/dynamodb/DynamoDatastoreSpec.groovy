@@ -506,6 +506,37 @@ class DynamoDatastoreSpec extends Specification {
         !(runningId in TExec.withNewSession { TExec.createCriteria().list { isNull('dateCompleted') }*.id })
     }
 
+    def "the job-list filter shape (JobQueryService, M2d): or { in(uuid), and { eq(scheduled) } }"() {
+        given:
+        TJob.withNewSession {
+            new TJob(uuid: 'jl-later', project: 'joblist', jobName: 'a').save(failOnError: true)
+            new TJob(uuid: 'jl-sched', project: 'joblist', jobName: 'b', scheduled: true).save(failOnError: true)
+            new TJob(uuid: 'jl-plain', project: 'joblist', jobName: 'c').save(failOnError: true)
+        }
+
+        when:
+        def names = TJob.withNewSession {
+            TJob.createCriteria().list {
+                eq('project', 'joblist')
+                or {
+                    'in'('uuid', ['jl-later'] as Set)
+                    and { eq('scheduled', true) }
+                }
+            }*.jobName.sort()
+        }
+
+        then:
+        names == ['a', 'b']
+    }
+
+    def "ping reads the id-block table (readiness, M2d)"() {
+        when:
+        datastore.ping()
+
+        then:
+        noExceptionThrown()
+    }
+
     def "unsupported criteria fail loudly instead of returning wrong rows"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { sqlRestriction('1=1') } }

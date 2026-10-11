@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy the Kestrel reference environment end to end:
-#   1. CDK stacks KestrelCi (ECR) + KestrelRef (VPC, EKS Auto Mode, RDS, ALB, CloudFront, Cognito)
+#   1. CDK stacks KestrelCi (ECR) + KestrelRef (VPC, EKS Auto Mode, ALB, CloudFront, Cognito; RDS only for rdbms)
 #   2. Kubernetes secrets derived from stack resources (never written to the repo)
 #   3. the Helm chart, running the image CI built from this commit
 #
@@ -9,23 +9,22 @@
 #      EPHEMERAL=true|false (default true: `teardown.sh` leaves nothing behind),
 #      SCHEDULER_MODE=kubernetes|quartz (default kubernetes: CronJobs + SQS + runners, M1),
 #      WEB_REPLICAS (default 2 in kubernetes mode), RUNNER_REPLICAS (default 1),
-#      STORAGE_MODE=dynamodb|rdbms (default dynamodb, ADR 0004),
+#      STORAGE_MODE=dynamodb|rdbms (default dynamodb, ADR 0004; rdbms adds RDS to the stack),
 #      SKIP_CDK=1 to reuse already-deployed stacks.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
+STORAGE_MODE=${STORAGE_MODE:-dynamodb}
 if [ "${SKIP_CDK:-0}" != 1 ]; then
-  log "CDK deploy (ephemeral=${EPHEMERAL:-true})"
+  log "CDK deploy (ephemeral=${EPHEMERAL:-true}, storage=$STORAGE_MODE)"
   (cd "$ROOT/infra" && $CDK deploy KestrelCi KestrelRef -c "ephemeral=${EPHEMERAL:-true}" \
-    --require-approval never)
+    -c "rdbms=$( [ "$STORAGE_MODE" = rdbms ] && echo true || echo false )" --require-approval never)
 fi
 
 CLUSTER=$(out KestrelRef ClusterName)
 PUBLIC_URL=$(out KestrelRef PublicUrl)
 TG_ARN=$(out KestrelRef TargetGroupArn)
 LOG_BUCKET=$(out KestrelRef LogBucket)
-DB_HOST=$(out KestrelRef DbEndpoint)
-DB_SECRET=$(out KestrelRef DbSecretArn)
 ISSUER=$(out KestrelRef OidcIssuer)
 POOL_ID=$(out KestrelRef UserPoolId)
 CLIENT_ID=$(out KestrelRef ClientId)
@@ -35,7 +34,6 @@ IMAGE_REPOSITORY=${IMAGE_REPOSITORY:-$(out KestrelCi RepositoryUri)}
 IMAGE_TAG=${IMAGE_TAG:-$(git -C "$ROOT" rev-parse HEAD | cut -c1-12)}
 TRIGGER_IMAGE=${TRIGGER_IMAGE:-$(out KestrelCi TriggerRepositoryUri):$IMAGE_TAG}
 SCHEDULER_MODE=${SCHEDULER_MODE:-kubernetes}
-STORAGE_MODE=${STORAGE_MODE:-dynamodb}
 DATA_PREFIX=$(out KestrelRef DataTablePrefix)
 if [ "$SCHEDULER_MODE" = kubernetes ]; then
   WEB_REPLICAS=${WEB_REPLICAS:-2}
@@ -60,11 +58,16 @@ kubectl --context "$KCTX" create namespace "$NS" --dry-run=client -o yaml | kube
 
 log "secrets"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT; chmod 700 "$tmp"
-aws secretsmanager get-secret-value --secret-id "$DB_SECRET" --query SecretString --output text \
-  | python3 -c 'import json,sys,os; d=json.load(sys.stdin); t=sys.argv[1]
+database_values=""
+if [ "$STORAGE_MODE" = rdbms ]; then
+  DB_HOST=$(out KestrelRef DbEndpoint)
+  aws secretsmanager get-secret-value --secret-id "$(out KestrelRef DbSecretArn)" --query SecretString --output text \
+    | python3 -c 'import json,sys,os; d=json.load(sys.stdin); t=sys.argv[1]
 open(os.path.join(t,"username"),"w").write(d["username"]); open(os.path.join(t,"password"),"w").write(d["password"])' "$tmp"
-k create secret generic kestrel-db --from-file="$tmp/username" --from-file="$tmp/password" \
-  --dry-run=client -o yaml | k apply -f -
+  k create secret generic kestrel-db --from-file="$tmp/username" --from-file="$tmp/password" \
+    --dry-run=client -o yaml | k apply -f -
+  database_values="database: { url: \"jdbc:postgresql://$DB_HOST:5432/kestrel\", existingSecret: kestrel-db }"
+fi
 
 # Generated once and kept: rotating these breaks stored keys / signed-in sessions.
 if ! k get secret kestrel-keystorage >/dev/null 2>&1; then
@@ -95,9 +98,7 @@ scheduler:
   ledgerTable: $LEDGER
   region: $AWS_REGION
   trigger: { image: $TRIGGER_IMAGE }
-database:
-  url: jdbc:postgresql://$DB_HOST:5432/kestrel
-  existingSecret: kestrel-db
+$database_values
 keyStorage: { existingSecret: kestrel-keystorage }
 logStorage: { s3: { enabled: true, provider: kestrel-s3, bucket: $LOG_BUCKET, region: $AWS_REGION } }
 auth:
