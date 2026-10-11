@@ -223,7 +223,9 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             int n = orphanSightings.merge(uuid, 1) { a, b -> a + b }
             if (n >= 2) {
                 log.warn("Kestrel: marking executions of departed server ${uuid} incomplete (no pod carries it)")
-                executionService.cleanupRunningJobs(uuid, null, new Date())
+                // the status upstream gives its own leftovers at boot (executionService.startup.cleanupStatus);
+                // with none, cleanup marks the execution cancelled, which reads as a user abort
+                executionService.cleanupRunningJobs(uuid, 'incomplete', new Date())
                 orphanSightings.remove(uuid)
             }
         }
