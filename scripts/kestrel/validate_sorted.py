@@ -5,8 +5,8 @@ Imports a project archive holding one job and N executions (default 1200) with t
 some sharing a completion time, then checks that:
   - project execution pages (first, middle, last) come back in Rundeck's order, with the total;
   - a job's execution page and the project history come back newest first;
-  - no page query read more than 500 rows. The datastore logs every query that reads more, with
-    its plan and max; totals (max -1) count every matching row, and with N > 500 they must log,
+  - page queries read only offset + max rows (plus ties) through a sorted index. The datastore logs
+    every query reading over 500 rows with its plan, offset and max; totals (max -1) count every matching row, and with N > 500 they must log,
     through an index rather than a table scan.
 
   validate_sorted.py          local Kestrel (local-run.sh)
@@ -27,7 +27,7 @@ import local_validate_m2c as m  # noqa: E402  (sign-in, API calls, server log ac
 
 N = int(os.environ.get("KESTREL_SORTED_N", "1200"))
 RESULTS = []
-READ_LINE = re.compile(r"Kestrel DynamoDB: (\w+) query read (\d+) rows \(plan ([^,]+), (\d+) matched, max (-?\d+)\)")
+READ_LINE = re.compile(r"Kestrel DynamoDB: (\w+) query read (\d+) rows \(plan ([^,]+), (\d+) matched, offset (-?\d+), max (-?\d+)\)")
 
 
 def check(name, ok, detail=""):
@@ -106,12 +106,29 @@ def run(ui, user, since):
     data, execs = archive(project, str(uuid.uuid4()))
 
     t0 = time.time()
+    import urllib.error
     import urllib.request
     req = urllib.request.Request(
         m.BASE + f"/api/{A}/project/{project}/import?importExecutions=true&jobUuidOption=remove&importConfig=false&importACL=false",
         data=data, method="PUT", headers=dict(T, Accept="application/json", **{"Content-Type": "application/zip"}))
-    with ui.open(req, timeout=1800) as r:
-        result = json.loads(r.read())
+    try:
+        with ui.open(req, timeout=1800) as r:
+            result = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code != 504:
+            raise
+        # CloudFront gives up on the origin after 60 s; the import goes on. Wait for all of it.
+        result = {"import_status": "successful", "note": "CloudFront 504; polled until complete"}
+        for _ in range(360):
+            s1, b1 = m.call(ui, f"/api/{A}/project/{project}/executions?max=1", headers=T)
+            s2, b2 = m.call(ui, f"/api/{A}/project/{project}/history?max=1", headers=T)
+            n1 = json.loads(b1).get("paging", {}).get("total") if s1 == 200 else None
+            n2 = json.loads(b2).get("paging", {}).get("total") if s2 == 200 else None
+            if n1 == N and n2 == N:
+                break
+            time.sleep(10)
+        else:
+            result = {"import_status": "incomplete", "executions": n1, "reports": n2}
     check(f"setup: {N} executions imported", result.get("import_status") == "successful",
           f"{time.time() - t0:.0f}s, {json.dumps(result)[:200]}")
 
@@ -141,8 +158,9 @@ def run(ui, user, since):
     lat.append(time.time() - t)
     got = json.loads(body) if s == 200 else {}
     ends = [e.get("date-ended", {}).get("unixtime") for e in got.get("executions", [])]
-    check("job executions page: newest first, total", len(ends) == 10 and ends == sorted(ends, reverse=True)
-          and got.get("paging", {}).get("total") == N, f"HTTP {s}, total {got.get('paging', {}).get('total')}")
+    check("job executions page: newest first, total, under 3 s", len(ends) == 10 and ends == sorted(ends, reverse=True)
+          and got.get("paging", {}).get("total") == N and lat[-1] < 3,
+          f"HTTP {s}, total {got.get('paging', {}).get('total')}, {lat[-1] * 1000:.0f} ms")
 
     t = time.time()
     s, body = m.call(ui, f"/api/{A}/project/{project}/history?max=20", headers=T)
@@ -156,9 +174,13 @@ def run(ui, user, since):
     time.sleep(3 if not m.EKS else 10)
     reads = [READ_LINE.search(ln) for ln in server_lines(measure)]
     reads = [r for r in reads if r and r.group(1) in ("Execution", "ExecReport", "BaseReport")]
-    pages = [r.group(0) for r in reads if r.group(5) != "-1"]
-    counts = [r.group(0) for r in reads if r.group(5) == "-1"]
-    check("no page query read more than 500 rows", not pages, "; ".join(pages[:3]))
+    # a page at offset k has to read k + max rows (plus rows tied on the sort value); never more
+    pages = [r for r in reads if r.group(6) != "-1"]
+    counts = [r.group(0) for r in reads if r.group(6) == "-1"]
+    over = [r.group(0) for r in pages if int(r.group(2)) > max(0, int(r.group(5))) + int(r.group(6)) + 10
+            or not r.group(3).startswith("sorted:")]
+    check("page queries read only offset + max rows, through a sorted index", not over,
+          "; ".join(over[:3]) or f"{len(pages)} deep page(s) logged, e.g. " + "; ".join(r.group(0) for r in pages[:2]))
     if N > 500:  # only reads over 500 rows are logged
         check("totals count through an index, never a table scan",
               counts and not any("plan scan" in c for c in counts), "; ".join(counts[:3]))

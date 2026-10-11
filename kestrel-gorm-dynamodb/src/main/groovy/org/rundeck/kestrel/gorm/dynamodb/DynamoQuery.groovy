@@ -51,6 +51,8 @@ class DynamoQuery extends Query {
      */
     private PersistentEntity thisEntity
     private Map thisRow
+    /** Rows of to-one targets read by this query (see {@link #associatedRow}). */
+    private final Map<String, Map> associatedRows = [:]
 
     DynamoQuery(DynamoSession session, PersistentEntity entity, DynamoEntityPersister persister) {
         super(session, entity)
@@ -81,7 +83,7 @@ class DynamoQuery extends Query {
         }
         LAST_PLAN.set(plan)
         if (LAST_READ.get() > LARGE_READ) {
-            log.info("Kestrel DynamoDB: ${entity.javaClass.simpleName} query read ${LAST_READ.get()} rows (plan ${plan}, ${rows.size()} matched, max ${max})")
+            log.info("Kestrel DynamoDB: ${entity.javaClass.simpleName} query read ${LAST_READ.get()} rows (plan ${plan}, ${rows.size()} matched, offset ${offset}, max ${max})")
         }
         if (orderBy) {
             rows = sortRows(rows)
@@ -424,11 +426,26 @@ class DynamoQuery extends Query {
         if (a instanceof ToOne) {
             def fk = row[persister.getPropertyKey(a)]
             if (fk == null) return false
-            def rows = targetPersister.retrieveEntries([fk])
-            return rows && matches(target, rows[0], aq.criteria)
+            Map associated = associatedRow(targetPersister, target, fk)
+            return associated != null && matches(target, associated, aq.criteria)
         }
         def ids = childIds(entity, row, a)
         ids && targetPersister.retrieveEntries(ids).any { matches(target, it, aq.criteria) }
+    }
+
+    /**
+     * The row a to-one association points at, read once per query: criteria on an association
+     * (a job's executions filtered by {@code scheduledExecution { eq 'uuid', ... }}) are checked on
+     * every candidate, and most candidates share the same few targets (seen: a job page counting
+     * 1200 executions made 1200 reads of the one job, 7 s).
+     */
+    private Map associatedRow(DynamoEntityPersister targetPersister, PersistentEntity target, Object fk) {
+        String key = target.rootEntity.name + '#' + ValueCodec.keyString(fk)
+        if (!associatedRows.containsKey(key)) {
+            List<Map> rows = targetPersister.retrieveEntries([fk])
+            associatedRows[key] = rows ? rows[0] : null
+        }
+        associatedRows[key]
     }
 
     /** Child ids of a to-many association: the association index, else the inverse FK index. */
@@ -462,9 +479,9 @@ class DynamoQuery extends Query {
         }
         if (p instanceof ToOne && v != null) {
             def targetPersister = (DynamoEntityPersister) dynamoSession.getPersister(((ToOne) p).associatedEntity.javaClass)
-            def rows = targetPersister.retrieveEntries([v])
-            return rows ? new DynamoQuery(dynamoSession, ((ToOne) p).associatedEntity, targetPersister)
-                .value(((ToOne) p).associatedEntity, rows[0], parts.drop(1).join('.')) : null
+            Map associated = associatedRow(targetPersister, ((ToOne) p).associatedEntity, v)
+            return associated != null ? new DynamoQuery(dynamoSession, ((ToOne) p).associatedEntity, targetPersister)
+                .value(((ToOne) p).associatedEntity, associated, parts.drop(1).join('.')) : null
         }
         def cur = v
         for (String part : parts.drop(1)) {

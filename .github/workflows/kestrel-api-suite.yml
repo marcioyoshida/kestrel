@@ -79,6 +79,7 @@ jobs:
           python3 scripts/kestrel/api_suite_compose.py \
             functional-test/src/test/resources/docker/compose/oss/docker-compose.yml ${{ matrix.storage }}
       - name: apiTest
+        continue-on-error: true   # the verdict is the compare job's: some upstream tests fail on both
         env:
           TEST_IMAGE: kestrel:ci
           SHARD: ${{ matrix.shard }}
