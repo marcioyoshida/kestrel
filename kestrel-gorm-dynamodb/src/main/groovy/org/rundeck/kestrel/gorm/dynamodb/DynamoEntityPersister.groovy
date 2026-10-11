@@ -156,6 +156,7 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         nullOnlyProperties(persistentEntity).each { PersistentProperty p ->
             if (entry[getPropertyKey(p)] == null) getPropertyIndexer(p).index(null, storeId)
         }
+        indexSorted(persistentEntity, storeId, entry, null)
         storeId
     }
 
@@ -195,6 +196,56 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
         dynamoSession.withBatch { WriteBatch b ->
             b.update(table, itemKey, set, remove, expected != null ? VERSION : null, expected, persistentEntity, key)
         }
+        indexSorted(persistentEntity, key, entry, dynamoSession.previousState(entityAccess.entity))
+    }
+
+    /**
+     * Sorted-index entries of a row, written in the item's batch. With the previous values known
+     * (the session's snapshot) an unchanged entry is not rewritten and a moved one is deleted;
+     * otherwise readers skip the stale entry (see {@link SortedIndex}).
+     */
+    private void indexSorted(PersistentEntity e, Object id, Map entry, Map<String, Object> previous) {
+        for (SortedIndex s : datastore.sortedIndexes) {
+            if (!s.appliesTo(e)) continue
+            Object pv = entry[s.partition]
+            String k = pv == null ? null : s.partitionKey(rootFamily, pv)
+            String entryId = SortedIndex.entryId(entry[s.sort], id)
+            if (previous != null) {
+                Object oldPv = previous[s.partition]
+                String oldK = oldPv == null ? null : s.partitionKey(rootFamily, oldPv)
+                String oldId = SortedIndex.entryId(previous[s.sort], id)
+                if (oldK == k && oldId == entryId) continue
+                if (oldK != null) deleteIndex(oldK, oldId)
+            }
+            if (k != null) putIndex(k, entryId)
+        }
+    }
+
+    /** Removes a deleted row's sorted-index entries (its stored state, else its current one). */
+    private void unindexSorted(PersistentEntity e, Object obj) {
+        if (datastore.sortedIndexes.isEmpty()) return
+        Map<String, Object> state = dynamoSession.previousState(obj) ?: dynamoSession.stateOf(obj)
+        Object id = getObjectIdentifier(obj)
+        if (state == null || id == null) return
+        for (SortedIndex s : datastore.sortedIndexes) {
+            if (s.appliesTo(e) && state[s.partition] != null) {
+                deleteIndex(s.partitionKey(rootFamily, state[s.partition]), SortedIndex.entryId(state[s.sort], id))
+            }
+        }
+    }
+
+    /**
+     * One page of a sorted index, in order.
+     * @return [entries: entry ids, last: the key to continue from, or null at the end]
+     */
+    Map querySorted(String k, boolean descending, int limit, Map<String, AttributeValue> startKey) {
+        def r = datastore.client.query { b ->
+            b.tableName(datastore.tables.indexTable()).keyConditionExpression('k = :k')
+             .expressionAttributeValues([':k': AttributeValue.fromS(k)]).consistentRead(true)
+             .scanIndexForward(!descending).limit(limit)
+            if (startKey) b.exclusiveStartKey(startKey)
+        }
+        [entries: r.items().collect { it.id.s() }, last: r.hasLastEvaluatedKey() && r.lastEvaluatedKey() ? r.lastEvaluatedKey() : null]
     }
 
     /** Properties of this entity (or its ancestors) configured as `Entity.property:null`. */
@@ -219,6 +270,7 @@ class DynamoEntityPersister extends AbstractKeyValueEntityPersister<Map, Object>
             owner.deleteEntity(persistentEntity, obj)
             return
         }
+        unindexSorted(persistentEntity, obj)
         dynamoSession.forget(obj)
         super.deleteEntity(persistentEntity, obj)
     }

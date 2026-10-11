@@ -253,6 +253,7 @@ class Application extends GrailsAutoConfiguration implements EnvironmentAware {
         removeGORMdbCreateProperty(environment)
         if (org.rundeck.kestrel.app.KestrelStorage.isDynamo()) {
             environment.propertySources.addFirst(new MapPropertySource("kestrel-dynamodb-no-rdbms", KESTREL_NO_RDBMS))
+            environment.propertySources.addLast(new MapPropertySource("kestrel-dynamodb-defaults", KESTREL_DYNAMODB_DEFAULTS))
         }
     }
 
@@ -263,6 +264,15 @@ class Application extends GrailsAutoConfiguration implements EnvironmentAware {
      * RDS, no Liquibase, and a leftover SQL query fails with "table not found" instead of reading a
      * shared database. Highest precedence, over rundeck-config and RUNDECK_DATABASE_*.
      */
+    /**
+     * Kestrel (M2d): defaults for DynamoDB mode, lowest precedence so any configuration overrides
+     * them. Execution list totals count every matching row (sorted indexes serve the page itself,
+     * not the total), so upstream's per-pod count cache, with its stale-count checks, is on.
+     */
+    static final Map<String, Object> KESTREL_DYNAMODB_DEFAULTS = [
+        'rundeck.api.executionQueryConfig.countCache.enabled': true,
+    ].asImmutable()
+
     static final Map<String, Object> KESTREL_NO_RDBMS = [
         'dataSource.url'                                : 'jdbc:h2:mem:kestrel;DB_CLOSE_DELAY=-1',
         'dataSource.driverClassName'                    : 'org.h2.Driver',

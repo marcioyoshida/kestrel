@@ -223,6 +223,12 @@ class ExecutionQuery extends ScheduledExecutionQuery implements Validateable{
         } else if (null != query.adhoc || hasJobFilters) {
           isNotNull('scheduledExecution')
         }
+        if (org.rundeck.kestrel.app.KestrelStorage.isDynamo() && !query.adhoc && idlist?.size() == 1 &&
+            idlist[0] instanceof String && !(query.includeJobRef && query.execProjects)) {
+          // Kestrel (M2d): redundant with the job criteria below (an execution carries its job's
+          // uuid), so the DynamoDB planner can read the job's sorted index instead of the project's.
+          eq('jobUuid', idlist[0])
+        }
         if (!query.adhoc && hasJobFilters) {
           delegate.'scheduledExecution' {
             //begin related ScheduledExecution query

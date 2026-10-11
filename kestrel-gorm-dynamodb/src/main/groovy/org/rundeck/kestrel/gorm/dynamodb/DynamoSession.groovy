@@ -185,6 +185,11 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
      * @param o entity
      * @return property name to a comparable value, or null for objects that are not entities here
      */
+    /** @return the entity's state when it was loaded or last written (property name to comparable value), or null if untracked */
+    Map<String, Object> previousState(Object o) {
+        snapshots.get(o)
+    }
+
     Map<String, Object> stateOf(Object o) {
         PersistentEntity e = o == null ? null : mappingContext.getPersistentEntity(o.getClass().name)
         if (e == null) return null

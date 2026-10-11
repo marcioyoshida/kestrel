@@ -15,9 +15,10 @@ import java.util.regex.Pattern
 /**
  * GORM query on DynamoDB.
  *
- * <p>Planning, cheapest first, using the top-level conjunction: id equality or id IN → GetItem /
- * BatchGetItem; equality or small IN on an indexed property → index table → BatchGetItem;
- * otherwise a paginated Scan. Every criterion is then evaluated in memory on the candidates, so a
+ * <p>Planning, cheapest first, using the top-level conjunction: an ordered, paged query on a
+ * sorted index's partition → that index, read in order only as far as the page needs (see
+ * {@link SortedIndex}); id equality or id IN → GetItem / BatchGetItem; equality or small IN on an
+ * indexed property → index table → BatchGetItem; otherwise a paginated Scan. Every criterion is then evaluated in memory on the candidates, so a
  * plan only narrows, never changes, the result. Ordering, projections (including group-by),
  * offset and max are applied after filtering. Criteria the evaluator does not support raise
  * {@link InvalidDataAccessResourceUsageException} instead of returning wrong rows.
@@ -32,6 +33,10 @@ class DynamoQuery extends Query {
     String plan
     /** Plan of the last query run on this thread (tests assert that indexes are used). */
     static final ThreadLocal<String> LAST_PLAN = new ThreadLocal<>()
+    /** Rows the last query on this thread read from DynamoDB before filtering. */
+    static final ThreadLocal<Integer> LAST_READ = ThreadLocal.withInitial { 0 }
+    /** Queries reading more rows than this are logged with their plan. */
+    static final int LARGE_READ = 500
 
     /** Correlated subquery context: the subquery's alias, and the outer query's row ("this."). */
     String alias
@@ -65,9 +70,19 @@ class DynamoQuery extends Query {
 
     @Override
     protected List executeQuery(PersistentEntity entity, Query.Junction criteria) {
-        List<Map> rows = candidates(entity, criteria)
+        Map sorted = sortedPlan(entity, criteria)
+        List<Map> rows
+        if (sorted != null) {
+            rows = streamSorted(entity, criteria, sorted)
+        } else {
+            rows = candidates(entity, criteria)
+            LAST_READ.set(rows.size())
+            rows = rows.findAll { belongsTo(entity, it) && matches(entity, it, criteria) }
+        }
         LAST_PLAN.set(plan)
-        rows = rows.findAll { belongsTo(entity, it) && matches(entity, it, criteria) }
+        if (LAST_READ.get() > LARGE_READ) {
+            log.info("Kestrel DynamoDB: ${entity.javaClass.simpleName} query read ${LAST_READ.get()} rows (plan ${plan}, ${rows.size()} matched, max ${max})")
+        }
         if (orderBy) {
             rows = sortRows(rows)
         }
@@ -78,6 +93,85 @@ class DynamoQuery extends Query {
     }
 
     // ---------------------------------------------------------------- planning
+
+    /**
+     * A sorted index serves an ordered, paged query whose first order is the index's sort
+     * property and whose top-level conjunction fixes the index's partition property.
+     * @return [index, value, descending], or null
+     */
+    private Map sortedPlan(PersistentEntity entity, Query.Junction criteria) {
+        if (max < 0 || orderBy.isEmpty() || !projections.isEmpty() || outerRow != null) return null
+        Query.Order first = orderBy[0]
+        if (first.ignoreCase) return null
+        for (SortedIndex s : persister.datastore.sortedIndexes) {
+            if (!s.appliesTo(entity) || s.sort != local(first.property)) continue
+            Object v = topLevelEquals(criteria, s.partition)
+            if (v != null) {
+                return [index: s, value: v, descending: first.direction == Query.Order.Direction.DESC]
+            }
+        }
+        null
+    }
+
+    private Object topLevelEquals(Query.Junction j, String property) {
+        if (!(j instanceof Query.Conjunction)) return null
+        for (Query.Criterion c : j.criteria) {
+            if (c instanceof Query.Equals && local(((Query.Equals) c).property) == property && ((Query.Equals) c).value != null) {
+                return ((Query.Equals) c).value
+            }
+            if (c instanceof Query.Conjunction) {
+                Object v = topLevelEquals((Query.Junction) c, property)
+                if (v != null) return v
+            }
+        }
+        null
+    }
+
+    /**
+     * Reads the partition in sort order until offset + max rows match, plus the rows tied with
+     * the last of them; the caller's full sort and paging over these is then exact, because every
+     * row not read sorts after them on the first order. Each entry is checked against its item,
+     * so stale entries (moved or deleted rows) are skipped.
+     */
+    private List<Map> streamSorted(PersistentEntity entity, Query.Junction criteria, Map sp) {
+        SortedIndex s = (SortedIndex) sp.index
+        String k = s.partitionKey(persister.rootFamily, sp.value)
+        int need = Math.max(0, offset) + max
+        int pageSize = Math.min(1000, Math.max(25, need + (need >> 1)))
+        List<Map> out = []
+        String lastToken = null
+        Map startKey = null
+        int read = 0
+        boolean done = false
+        while (!done) {
+            Map page = persister.querySorted(k, (boolean) sp.descending, pageSize, (Map) startKey)
+            List<String> entries = (List<String>) page.entries
+            Map<String, Map> byId = [:]
+            persister.retrieveEntries(entries.collect { SortedIndex.idOf(it) }).each { Map r -> byId[ValueCodec.keyString(r.id)] = r }
+            for (String entryId : entries) {
+                String token = SortedIndex.tokenOf(entryId)
+                if (out.size() >= need && token != lastToken) {
+                    done = true
+                    break
+                }
+                Map row = byId[SortedIndex.idOf(entryId)]
+                read++
+                if (row == null || s.partitionKey(persister.rootFamily, row[s.partition]) != k ||
+                    SortedIndex.entryId(row[s.sort], row.id) != entryId) {
+                    continue  // stale: the row moved or was deleted
+                }
+                if (belongsTo(entity, row) && matches(entity, row, criteria)) {
+                    out << row
+                    lastToken = token
+                }
+            }
+            startKey = (Map) page.last
+            if (startKey == null) done = true
+        }
+        plan = "sorted:${s.partition}>${s.sort}".toString()
+        LAST_READ.set(read)
+        out
+    }
 
     List<Map> candidates(PersistentEntity entity, Query.Junction criteria) {
         List<String> how = []

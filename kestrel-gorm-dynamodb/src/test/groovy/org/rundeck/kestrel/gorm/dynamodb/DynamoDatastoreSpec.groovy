@@ -17,6 +17,10 @@ import spock.lang.Specification
 class DynamoDatastoreSpec extends Specification {
     @Shared DynamoDbClient client
     @Shared DynamoDatastore datastore
+    @Shared String prefix = 'spec' + System.nanoTime()
+    static final List<String> INDEXED = ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token', 'TRef.jobUuid',
+                                         'TExec.dateCompleted:null', 'TExec.project>dateCompleted', 'TExec.project>dateStarted']
+    static final List<Class> CLASSES = [TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef, TOwner, TFlow]
 
     static String endpoint() {
         System.getenv('KESTREL_DYNAMODB_ENDPOINT') ?: 'http://localhost:8000'
@@ -36,10 +40,28 @@ class DynamoDatastoreSpec extends Specification {
         client = DynamoDbClient.builder().endpointOverride(URI.create(endpoint())).region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('x', 'x')))
             .httpClientBuilder(UrlConnectionHttpClient.builder()).build()
-        datastore = new DynamoDatastore(client, 'spec' + System.nanoTime(), true, ['TExec.status', 'TExec.project', 'TJob.uuid', 'TJob.project', 'TToken.token', 'TRef.jobUuid', 'TExec.dateCompleted:null'],
+        datastore = newDatastore(INDEXED)
+    }
+
+    DynamoDatastore newDatastore(List<String> indexed, String tablePrefix = prefix) {
+        new DynamoDatastore(client, tablePrefix, true, indexed,
             org.grails.datastore.mapping.core.DatastoreUtils.createPropertyResolver([:]),
-            new org.grails.datastore.gorm.events.DefaultApplicationEventPublisher(),
-            TJob, TOption, TExec, TStep, TCmdStep, TJobStep, TToken, TWorkflow, TRef, TOwner, TFlow)
+            new org.grails.datastore.gorm.events.DefaultApplicationEventPublisher(), CLASSES as Class[])
+    }
+
+    /** What the in-memory plan returns for the same query: all rows of the project, sorted and paged here. */
+    static List<Long> expected(String project, Closure<Boolean> filter, String sortProp, boolean desc, int offset, int max) {
+        def rows = TExec.withNewSession { TExec.findAllByProject(project) }.findAll(filter)
+        Comparator<TExec> byProp = { TExec a, TExec b ->
+            def va = a[sortProp], vb = b[sortProp]
+            va == null ? (vb == null ? 0 : -1) : (vb == null ? 1 : va <=> vb)
+        } as Comparator<TExec>
+        rows.sort { TExec a, TExec b ->
+            int r = byProp.compare(a, b)
+            r = desc ? -r : r
+            r != 0 ? r : -(a.id <=> b.id)
+        }
+        rows.drop(offset).take(max)*.id
     }
 
     def cleanupSpec() {
@@ -597,11 +619,113 @@ class DynamoDatastoreSpec extends Specification {
         noExceptionThrown()
     }
 
+    def "sorted index: an ordered page reads only what it needs and equals the in-memory result (#direction, offset #offset)"() {
+        given: '60 executions, many sharing a completion time, some still running'
+        def project = "sorted-${direction}-${offset}"
+        TExec.withNewSession {
+            60.times { i ->
+                Date started = new Date(1_000_000L + i * 1000)
+                Date completed = i % 7 == 0 ? null : new Date(2_000_000L + (i % 9) * 1000)
+                new TExec(project: project, status: i % 3 ? 'succeeded' : 'failed', user: 'u', dateStarted: started,
+                    dateCompleted: completed).save(failOnError: true)
+            }
+            new TExec(project: 'elsewhere', status: 'succeeded', user: 'u', dateStarted: new Date(), dateCompleted: new Date(9_999_999L)).save(failOnError: true)
+        }
+        boolean desc = direction == 'desc'
+
+        when:
+        def ids = TExec.withNewSession {
+            TExec.createCriteria().list(max: 5, offset: offset) {
+                eq('project', project)
+                eq('status', 'succeeded')
+                order('dateCompleted', direction)
+                order('id', 'desc')
+            }*.id
+        }
+        def plan = DynamoQuery.LAST_PLAN.get()
+        def read = DynamoQuery.LAST_READ.get()
+
+        then:
+        ids == expected(project, { it.status == 'succeeded' }, 'dateCompleted', desc, offset, 5)
+        plan == 'sorted:project>dateCompleted'
+        read < 60
+
+        where:
+        direction | offset
+        'desc'    | 0
+        'desc'    | 7
+        'asc'     | 0
+        'asc'     | 11
+    }
+
+    def "sorted index follows updates and deletes: a finished run moves, a deleted one disappears"() {
+        given:
+        def project = 'sorted-moves'
+        def ids = TExec.withNewSession {
+            (0..<10).collect { i ->
+                new TExec(project: project, status: 'succeeded', user: 'u', dateStarted: new Date(1000L * i),
+                    dateCompleted: i < 9 ? new Date(5000L + i) : null).save(failOnError: true).id
+            }
+        }
+        def top = { TExec.withNewSession {
+            TExec.createCriteria().list(max: 3) { eq('project', project); order('dateCompleted', 'desc') }*.id
+        } }
+        def before = top()
+
+        when: 'the running one finishes, later than all others, in another session (as a runner pod would)'
+        TExec.withNewSession { def e = TExec.get(ids[9]); e.dateCompleted = new Date(99_999L); e.save(flush: true, failOnError: true) }
+        def afterFinish = top()
+
+        and: 'the newest is deleted'
+        TExec.withNewSession { TExec.get(ids[9]).delete(flush: true) }
+        def afterDelete = top()
+
+        then:
+        before == [ids[8], ids[7], ids[6]]  // the running one (null) sorts last descending, as in memory
+        afterFinish == [ids[9], ids[8], ids[7]]
+        afterDelete == [ids[8], ids[7], ids[6]]
+        DynamoQuery.LAST_PLAN.get() == 'sorted:project>dateCompleted'
+    }
+
+    def "an unordered or unpaged query keeps the regular plan"() {
+        when:
+        TExec.withNewSession { TExec.createCriteria().list { eq('project', 'sorted-moves'); order('dateCompleted', 'desc') } }
+        def unpaged = DynamoQuery.LAST_PLAN.get()
+        TExec.withNewSession { TExec.createCriteria().list(max: 2) { eq('project', 'sorted-moves'); order('user', 'desc') } }
+        def otherOrder = DynamoQuery.LAST_PLAN.get()
+
+        then:
+        unpaged.startsWith('index:')
+        otherOrder.startsWith('index:')
+    }
+
     def "unsupported criteria fail loudly instead of returning wrong rows"() {
         when:
         TExec.withNewSession { TExec.createCriteria().list { sqlRestriction('1=1') } }
 
         then:
         thrown(Exception)
+    }
+
+    def "a sorted index added later is built for existing rows at startup (runs last: it rebinds the classes)"() {
+        given: 'rows written by a datastore without the index, on tables of their own'
+        def fresh = 'backfill' + System.nanoTime()
+        datastore.close()
+        datastore = newDatastore(INDEXED.findAll { !it.contains('>') }, fresh)
+        def ids = TExec.withNewSession {
+            (0..<4).collect { i -> new TExec(project: 'backfill', status: 's', user: 'u', dateStarted: new Date(),
+                dateCompleted: new Date(10_000L + i)).save(flush: true, failOnError: true).id }
+        }
+
+        when: 'a datastore with the index starts on the same tables'
+        datastore.close()
+        datastore = newDatastore(INDEXED, fresh)
+        def top = TExec.withNewSession {
+            TExec.createCriteria().list(max: 2) { eq('project', 'backfill'); order('dateCompleted', 'desc') }*.id
+        }
+
+        then:
+        top == [ids[3], ids[2]]
+        DynamoQuery.LAST_PLAN.get() == 'sorted:project>dateCompleted'
     }
 }

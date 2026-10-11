@@ -30,6 +30,9 @@ import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.PutRequest
+import software.amazon.awssdk.services.dynamodb.model.WriteRequest
+import org.slf4j.LoggerFactory
 
 /**
  * GORM datastore on DynamoDB (ADR 0004). Reuses GORM's simple datastore for the GORM plumbing
@@ -49,6 +52,8 @@ class DynamoDatastore extends SimpleMapDatastore {
     final IdAllocator ids
     /** `Entity.property` names indexed only while null (`Entity.property:null` in the index list). */
     final Set<String> nullOnlyIndexes = new HashSet<>()
+    /** Sorted indexes ({@code Entity.partition>sort} in the indexed list), see {@link SortedIndex}. */
+    final List<SortedIndex> sortedIndexes = []
     private final ConfigurableApplicationEventPublisher publisher
 
     /**
@@ -75,10 +80,12 @@ class DynamoDatastore extends SimpleMapDatastore {
         this.ids = new IdAllocator(tables, 100L)
         this.publisher = publisher
         markIndexed(indexed ?: [])
+        sortedIndexes.addAll(sortedIndexesOf(indexed ?: []))
         registerUniqueConstraint()
         if (createTables) {
             tables.ensureAll(mappingContext.persistentEntities.findAll { it.root }.collect { familyOf(it) })
         }
+        buildSortedIndexes()
         leaveSingleDatastoreLookupToOthers()
         // withTransaction takes getCurrentSession(): inside a Hibernate transaction that is the
         // transaction's shared session, so code around withTransaction sees the same instances.
@@ -123,6 +130,59 @@ class DynamoDatastore extends SimpleMapDatastore {
         if (registry instanceof DefaultValidatorRegistry) {
             DefaultValidatorRegistry r = (DefaultValidatorRegistry) registry
             r.addConstraintFactory(new MappingContextAwareConstraintFactory(UniqueConstraint, r.messageSource, mappingContext))
+        }
+    }
+
+    /** Parses the sorted-index specs; a spec naming a mapped entity but a missing property fails startup. */
+    private List<SortedIndex> sortedIndexesOf(Collection<String> indexed) {
+        List<SortedIndex> out = []
+        for (String spec : indexed) {
+            SortedIndex s = SortedIndex.parse(spec)
+            if (s == null) continue
+            PersistentEntity e = mappingContext.persistentEntities.find { PersistentEntity pe -> pe.javaClass.simpleName == s.entityName }
+            if (e == null) continue
+            if (e.getPropertyByName(s.partition) == null || e.getPropertyByName(s.sort) == null) {
+                throw new IllegalArgumentException("Sorted index ${spec}: ${s.entityName} has no property ${s.partition} or ${s.sort}")
+            }
+            out << s
+        }
+        out
+    }
+
+    /**
+     * Builds each sorted index once for the rows that existed before it (a scan of the entity's
+     * table), then writes a marker so later starts skip it. Idempotent, so pods starting together
+     * may both build it; rows written meanwhile index themselves.
+     */
+    private void buildSortedIndexes() {
+        for (SortedIndex s : sortedIndexes) {
+            PersistentEntity entity = mappingContext.persistentEntities.find { PersistentEntity pe -> pe.javaClass.simpleName == s.entityName }
+            PersistentEntity root = entity.rootEntity
+            String family = familyOf(root)
+            String indexTable = tables.indexTable()
+            Map<String, AttributeValue> marker = [k: AttributeValue.fromS(s.builtKey(family)), id: AttributeValue.fromS('-')]
+            if (client.getItem { it.tableName(indexTable).key(marker).consistentRead(true) }.hasItem()) continue
+            List<Map<String, AttributeValue>> entries = []
+            client.scanPaginator { it.tableName(tables.entityTable(family)).consistentRead(true) }.items().each { Map<String, AttributeValue> item ->
+                String disc = item.get(DynamoEntityPersister.DISCRIMINATOR)?.s()
+                PersistentEntity rowEntity = disc ? (mappingContext.getChildEntityByDiscriminator(root, disc) ?: root) : root
+                AttributeValue pv = item.get(s.partition)
+                if (!s.appliesTo(rowEntity) || pv == null || Boolean.TRUE == pv.nul()) return
+                AttributeValue sv = item.get(s.sort)
+                Object sort = sv == null || Boolean.TRUE == sv.nul() ? null : sv.n() != null ? (Object) new BigDecimal(sv.n()) : (Object) sv.s()
+                entries << [k : AttributeValue.fromS(s.partitionKey(family, ValueCodec.decode(pv, rowEntity.getPropertyByName(s.partition)?.type))),
+                            id: AttributeValue.fromS(SortedIndex.entryId(sort, item.get('id').s()))]
+            }
+            entries << marker
+            for (List<Map<String, AttributeValue>> chunk : entries.collate(25)) {
+                Map<String, List<WriteRequest>> req = [(indexTable): chunk.collect { Map<String, AttributeValue> it ->
+                    WriteRequest.builder().putRequest(PutRequest.builder().item(it).build()).build() }]
+                while (req) {
+                    def r = client.batchWriteItem { it.requestItems(req) }
+                    req = r.unprocessedItems()?.isEmpty() ? null : r.unprocessedItems()
+                }
+            }
+            LoggerFactory.getLogger(DynamoDatastore).info("Kestrel DynamoDB: built sorted index ${s} for ${entries.size() - 1} existing rows")
         }
     }
 
