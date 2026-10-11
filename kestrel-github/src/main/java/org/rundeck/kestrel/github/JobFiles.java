@@ -29,6 +29,11 @@ public final class JobFiles {
     private JobFiles() {
     }
 
+    /** The problem reported for a job without a uuid, by the pull-request check and by the import. */
+    public static String missingUuid(String name) {
+        return "job " + (name == null || name.isEmpty() ? "" : "'" + name + "' ") + "needs a uuid, so that Kestrel can update it in place";
+    }
+
     public static Parsed parse(String text) {
         Node root;
         try {

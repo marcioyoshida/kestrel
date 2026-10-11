@@ -13,7 +13,7 @@ mkdir -p "$BASE"
 if ! (exec 3<>/dev/tcp/127.0.0.1/8000) 2>/dev/null; then
   echo "starting DynamoDB Local"
   (cd "$DDB_HOME" && nohup "$JAVA" -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -inMemory -sharedDb -port 8000 > "$BASE/ddb.log" 2>&1 &)
-  sleep 5
+  for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8000) 2>/dev/null && break; sleep 1; done
 fi
 
 # Stateless sessions and the cluster bus use a ledger-shaped table (pk S); create it locally.

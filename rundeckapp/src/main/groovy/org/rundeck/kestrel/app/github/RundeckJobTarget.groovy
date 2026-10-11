@@ -3,6 +3,7 @@ package org.rundeck.kestrel.app.github
 import com.dtolabs.rundeck.core.authorization.UserAndRolesAuthContext
 import org.rundeck.app.components.jobs.ImportedJob
 import org.rundeck.core.auth.AuthConstants
+import org.rundeck.kestrel.github.JobFiles
 import org.rundeck.kestrel.github.JobTarget
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -137,7 +138,7 @@ class RundeckJobTarget implements JobTarget {
             ScheduledExecution found = job.uuid ? ScheduledExecution.findByUuid(job.uuid) : null
             existing << (found?.project == project ? found : null)
             if (!job.uuid) {
-                problems << new Problem(i, 'job needs a uuid, so that Kestrel can update it in place')
+                problems << new Problem(i, JobFiles.missingUuid(job.jobName))
                 return
             }
             if (found && found.project != project) {

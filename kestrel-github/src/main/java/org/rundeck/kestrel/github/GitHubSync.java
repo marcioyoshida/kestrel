@@ -245,8 +245,7 @@ public class GitHubSync {
             jobs += parsed.jobs().size();
             for (JobFiles.Job j : parsed.jobs()) {
                 if (j.uuid() == null) {
-                    annotations.add(new GitHubClient.Annotation(f.path(), j.line(), "failure",
-                            "job " + (j.name() == null ? "" : "'" + j.name() + "' ") + "needs a uuid, so that Kestrel can update it in place"));
+                    annotations.add(new GitHubClient.Annotation(f.path(), j.line(), "failure", JobFiles.missingUuid(j.name())));
                 } else if (seen.containsKey(j.uuid())) {
                     annotations.add(new GitHubClient.Annotation(f.path(), j.line(), "failure",
                             "uuid " + j.uuid() + " is also used in " + seen.get(j.uuid())));
@@ -256,6 +255,7 @@ public class GitHubSync {
             }
             annotations.addAll(annotate(f.path(), parsed, target.validate(repo, project, f.path(), text)));
         }
+        annotations = annotations.stream().distinct().toList();   // the target repeats the uuid check
         boolean failed = annotations.stream().anyMatch(a -> "failure".equals(a.level()));
         StringBuilder summary = new StringBuilder();
         summary.append(String.format("Checked %d job file(s), %d job(s), for branch `%s`.", files, jobs, config.branch()));
