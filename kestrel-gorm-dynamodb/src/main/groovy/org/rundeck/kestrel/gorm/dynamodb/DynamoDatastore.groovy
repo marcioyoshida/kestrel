@@ -206,8 +206,16 @@ class DynamoDatastore extends SimpleMapDatastore {
     }
 
     private void markIndexed(Collection<String> indexed) {
-        Set<String> plain = indexed.findAll { !it.endsWith(':null') } as Set
+        Set<String> plain = indexed.findAll { !it.endsWith(':null') && !it.contains('>') } as Set
         nullOnlyIndexes.addAll(indexed.findAll { it.endsWith(':null') }.collect { it - ':null' })
+        // A misnamed property would silently leave its queries scanning (seen: BaseReport.ctxProject).
+        for (String name : plain + nullOnlyIndexes) {
+            int dot = name.indexOf('.')
+            PersistentEntity e = dot < 0 ? null : mappingContext.persistentEntities.find { PersistentEntity pe -> pe.javaClass.simpleName == name.substring(0, dot) }
+            if (e != null && e.getPropertyByName(name.substring(dot + 1)) == null) {
+                throw new IllegalArgumentException("Index ${name}: ${e.javaClass.simpleName} has no property ${name.substring(dot + 1)}")
+            }
+        }
         for (PersistentEntity entity : mappingContext.persistentEntities) {
             for (PersistentProperty p : entity.persistentProperties) {
                 String name = entity.javaClass.simpleName + '.' + p.name

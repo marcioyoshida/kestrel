@@ -36,7 +36,7 @@ class KestrelStorage {
         'ScheduledExecutionStats.jobUuid',
         'JobFileRecord.jobId', 'JobFileRecord.uuid', 'JobFileRecord.project',
         'ExecReport.executionId', 'ExecReport.executionUuid', 'ExecReport.jobId',
-        'BaseReport.ctxProject',
+        'BaseReport.project',  // the property (its column is ctx_project)
         // M2d sorted indexes (Entity.partition>sort): ordered, paged lists read only their page.
         // The planner takes the first that applies, so the narrower job indexes come first.
         'Execution.jobUuid>dateCompleted',   // job executions (API, job page)
@@ -44,7 +44,7 @@ class KestrelStorage {
         'Execution.project>dateCompleted',   // project executions, activity
         'Execution.project>dateStarted',     // running and recent executions
         'ExecReport.jobId>dateCompleted',    // a job's history
-        'BaseReport.ctxProject>dateCompleted',  // project history / activity
+        'BaseReport.project>dateCompleted',  // project history / activity
     ].asImmutable()
 
     /** @return true when migrated classes live in DynamoDB */
