@@ -1,10 +1,10 @@
 # ADR 0005: M3 GitHub App sync and pull-request checks, as built
 
-- Status: Accepted (2026-10-11). Push sync and PR checks are built and checked locally against a
-  fake GitHub. The EKS exit test needs a real GitHub App, which only the owner can create.
+- Status: Accepted (2026-10-11). Push sync, PR checks and read-only synced jobs are built and
+  checked locally against a fake GitHub. The EKS exit test needs a real GitHub App, which only the
+  owner can create.
 - Refines: ADR 0001 §5 (GitHub integration) and the M3 row of its milestone table.
-- Not in this ADR (still M3): the headless engine and isolated run mode, AppCDS, and the
-  read-only "Edit in GitHub" UI for synced jobs.
+- Not in this ADR (still M3): the headless engine and isolated run mode, and AppCDS.
 
 ## Decision
 
@@ -95,6 +95,31 @@ create a **"Kestrel" check run** on the head commit:
 - **When there is no check run:** the PR targets a branch `kestrel.yaml` does not track, or the
   head has no `kestrel.yaml`.
 
+### Synced jobs are read-only elsewhere
+
+A job carrying the `kestrel-github` mark changes only through its repository.
+`ScheduledExecutionService` refuses any other change, so the UI, the API, imports and SCM can't
+get around it:
+- **Updates are refused:** saving in the UI, a job import over its uuid (API or UI), and SCM
+  import. An import lists the job under `failed`.
+- **Deleting it by id is refused:** from the UI, in bulk, or through the API, which answers 409.
+
+**What still works:**
+- the sync itself;
+- enabling or disabling the schedule or executions: operational switches, which the next sync of
+  that file resets to what the file says;
+- copying the job, which creates an ordinary job;
+- deleting the whole project.
+
+**In the UI:**
+- The job page shows the repository, path and commit, linked to the file.
+- **Edit** opens GitHub's editor for the file on the tracked branch.
+- The action menu has no Delete; removing the job from its file deletes it.
+
+Links come from the API URL: `api.github.com` gives `github.com`, and
+`https://<host>/api/v3` gives `https://<host>`. With the integration turned off (no App id), the
+mark is ignored and synced jobs behave like any other job.
+
 ### Configuration
 
 The Helm chart (`github.*`, web pods only) sets the App's configuration as environment variables:
@@ -122,7 +147,7 @@ a plain Java module with no Grails. The Rundeck side is the `JobTarget` implemen
 - **The webhook is synchronous.** GitHub stops waiting after 10 s. A first full sync of a large
   repository can outlast that: GitHub records a timeout, but the sync completes. If it fails, the
   next push retries it. A queue (the M1 SQS run queue) is the fix if this becomes common.
-- **Editing a synced job in the UI is not blocked yet.** The next sync that touches its file
-  overwrites the edit. The read-only UI is still to come.
+- **A schedule switched off in the UI comes back on** when the next sync touches the job's file
+  and the file says it is enabled. A lasting change belongs in the file.
 - **The check run and the import can disagree** when ACLs or other jobs change between the PR
   and the merge. The push reports that as a 422 with the problem, and the commit stays unsynced.

@@ -205,17 +205,20 @@ search
         </div>
     </g:if>
     <g:if test="${kestrelGitHubSource}">
-        <div class="list-group-item" id="kestrel-github-source">
-            <div class="alert alert-info">
-                <i class="fab fa-github"></i>
+        <div class="list-group-item" id="kestrel-github-source"
+             style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <span>
+                <i class="fab fa-github" aria-hidden="true"></i>
                 <g:message code="kestrel.github.synced.banner" default="Synced from GitHub:"/>
-                <a href="${enc(attr: kestrelGitHubSource.viewUrl)}" target="_blank" rel="noopener noreferrer"><g:enc>${kestrelGitHubSource.repo}: ${kestrelGitHubSource.path}</g:enc></a>
-                (<code><g:enc>${kestrelGitHubSource.commit?.take(7)}</g:enc></code>).
-                <g:message code="kestrel.github.synced.readonly" default="Changes go through a pull request; this job cannot be edited or deleted here."/>
-                <a class="btn btn-default btn-sm" href="${enc(attr: kestrelGitHubSource.editUrl)}" target="_blank" rel="noopener noreferrer">
-                    <g:message code="kestrel.github.edit" default="Edit in GitHub"/>
-                </a>
-            </div>
+                <a href="${enc(attr: kestrelGitHubSource.viewUrl)}" target="_blank" rel="noopener noreferrer"><g:enc>${kestrelGitHubSource.repo}/${kestrelGitHubSource.path}</g:enc></a>
+                <span class="text-muted" style="font-family: monospace;"><g:enc>@${kestrelGitHubSource.commit?.take(7)}</g:enc></span>
+            </span>
+            <span class="text-muted">
+                <g:message code="kestrel.github.synced.readonly" default="Read-only here: change it with a pull request."/>
+            </span>
+            <a class="btn btn-default btn-sm" href="${enc(attr: kestrelGitHubSource.editUrl)}" target="_blank" rel="noopener noreferrer">
+                <g:message code="kestrel.github.edit" default="Edit in GitHub"/>
+            </a>
         </div>
     </g:if>
 <tmpl:show scheduledExecution="${scheduledExecution}" crontab="${crontab}" jobComponents="${jobComponents}" jobComponentValues="${jobComponentValues}"/>
