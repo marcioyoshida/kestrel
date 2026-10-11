@@ -69,6 +69,7 @@ class FakeGitHub {
             }
             if ((m = path =~ '^/repos/o/r/compare/(\\w+)\\.\\.\\.(\\w+)$')) {
                 String base = m[0][1], head = m[0][2]
+                if (!commits[base] || !commits[head]) return json(x, 404, [message: 'Not Found'])
                 boolean ahead = branches.values().any { h -> h.indexOf(base) >= 0 && h.indexOf(head) > h.indexOf(base) }
                 return json(x, 200, [status: ahead ? 'ahead' : 'diverged', files: diff(commits[base], commits[head])])
             }

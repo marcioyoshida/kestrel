@@ -188,6 +188,22 @@ projects:
         target.jobs.ops.keySet() == ['a', 'ui'] as Set
     }
 
+    def "a last synced commit GitHub no longer has (repository recreated, history collected) syncs the whole tree"() {
+        given:
+        gh.commit('main', ['kestrel.yaml': CONFIG, 'jobs/ops/a.yaml': job('a'), 'jobs/ops/b.yaml': job('b')])
+        sync.push(1, 'o/r', 'main')
+
+        when:
+        gh.change('main', ['jobs/ops/b.yaml': null])
+        gh.commits.remove(target.synced['o/r@main'])
+        def r = sync.push(1, 'o/r', 'main')
+
+        then:
+        r.ok()
+        r.full()
+        r.deleted() == ['b']
+    }
+
     def "a failing file is reported and the commit is not recorded, so the next push retries"() {
         given:
         gh.commit('main', ['kestrel.yaml': CONFIG, 'jobs/ops/a.yaml': job('a')])

@@ -33,7 +33,7 @@ stateful server:
   - orphan sweeper;
   - stateless DynamoDB sessions with no ALB stickiness
     ([EKS record](validation/2026-10-10-m1-gaps-m2b-eks.md)).
-- **M2 in progress** ([ADR 0004](adr/0004-m2-dynamodb-gorm-datastore.md)): a GORM datastore on
+- **M2 is validated** ([ADR 0004](adr/0004-m2-dynamodb-gorm-datastore.md)): a GORM datastore on
   DynamoDB, enabled with `storage.mode: dynamodb`.
   - **M2b is validated on EKS:** projects, users, tokens, webhooks, plugin metadata, stored events
     and key/config storage.
@@ -52,6 +52,14 @@ stateful server:
     shows 0 regressions; the soak was exactly once. Totals still count every matching row, behind
     upstream's count cache.
 
+  Migrating an existing Rundeck database (owner question 4 in ADR 0001) is not built. Project
+  export and import already move jobs and executions one project at a time.
+- **M3 in progress** ([ADR 0005](adr/0005-m3-github-app.md)): a GitHub App syncs job YAML from
+  a repository on push and puts a "Kestrel" check run on pull requests. `local_validate_m3.py`
+  runs it against a fake GitHub (job live 6.4 s after the push). The EKS exit test needs a real
+  GitHub App. Still to do: the read-only UI for synced jobs, the headless engine and isolated
+  runs, and AppCDS.
+
 ## Build, deploy, prove, tear down
 
 ```bash
@@ -66,7 +74,8 @@ scripts/kestrel/teardown.sh           # helm uninstall, cdk destroy KestrelRef (
 Set `AWS_PROFILE` (default `my2027`) and `CDK` to point at the CDK CLI, for example
 `CDK="node …/aws-cdk/bin/cdk"`. `deploy.sh` refuses to run until CI has pushed the image for
 the current commit. Expect about $0.30/hour while the reference environment is up: the EKS
-control plane, one m5a.large node with the Auto Mode fee, NAT, RDS micro and the ALB.
+control plane, one m5a.large node with the Auto Mode fee, NAT and the ALB (DynamoDB is on
+demand; `STORAGE_MODE=rdbms` adds an RDS micro).
 Teardown leaves only the ECR repository and the GitHub OIDC role.
 
 ## Decisions
@@ -75,6 +84,7 @@ Teardown leaves only the ECR repository and the GitHub OIDC role.
 - [ADR 0002: UI modernization](adr/0002-ui-modernization.md)
 - [ADR 0003: M1 Kubernetes scheduler as built](adr/0003-m1-kubernetes-scheduler.md)
 - [ADR 0004: M2 DynamoDB persistence through a GORM datastore](adr/0004-m2-dynamodb-gorm-datastore.md)
+- [ADR 0005: M3 GitHub App sync and pull-request checks](adr/0005-m3-github-app.md)
 
 ## Known upstream issues
 

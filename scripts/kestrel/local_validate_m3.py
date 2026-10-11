@@ -45,7 +45,7 @@ def env():
             f.write(secrets.token_hex(20))
     pem = open(KEY_FILE).read().strip().replace("\n", "\\n")  # the literal-\n form Kestrel accepts
     for k, v in {"APP_ID": "77", "PRIVATE_KEY": pem, "WEBHOOK_SECRET": open(SECRET_FILE).read(),
-                 "REPOS": "acme/jobs,other/*", "ROLES": "admin", "API_URL": f"http://127.0.0.1:{PORT}"}.items():
+                 "REPOS": "acme/*,other/*", "ROLES": "admin", "API_URL": f"http://127.0.0.1:{PORT}"}.items():
         print(f"export KESTREL_GITHUB_{k}='{v}'")
 
 
@@ -60,7 +60,7 @@ class Fake:
 
     def commit(self, repo, branch, files):
         self.seq += 1
-        sha = hashlib.sha1(f"{repo}{self.seq}".encode()).hexdigest()
+        sha = hashlib.sha1(f"{repo}{self.seq}{secrets.token_hex(4)}".encode()).hexdigest()
         self.commits[sha] = dict(files)
         self.branches.setdefault((repo, branch), []).append(sha)
         return sha
@@ -117,6 +117,8 @@ class Fake:
             return (200, {"object": {"sha": h[-1]}}) if h else (404, {"message": "Not Found"})
         if rest[0] == "compare":
             base, head = rest[1].split("...")
+            if base not in self.commits or head not in self.commits:
+                return 404, {"message": "Not Found"}
             ahead = any(base in h and head in h and h.index(head) > h.index(base) for h in self.branches.values())
             return 200, {"status": "ahead" if ahead else "diverged", "files": self.diff(self.commits[base], self.commits[head])}
         if rest[0] == "pulls" and rest[2:] == ["files"]:
@@ -222,6 +224,7 @@ def main():
     for p in (p1, p2):
         s, _ = call(api, f"/api/{API}/projects", "POST", json.dumps({"name": p, "config": {"resources.source.1.type": "local"}}), headers=T)
         check(f"setup: project {p}", s == 201, f"HTTP {s}")
+    repo, other = f"acme/jobs-{tag}", f"other/repo-{tag}"   # sync state persists in DynamoDB Local
     fake = Fake()
     srv = fake.serve()
 
@@ -230,18 +233,18 @@ def main():
         return json.loads(out) if s == 200 else None
 
     # deliveries GitHub would send that must not sync anything
-    s, out = deliver("ping", {"zen": "Keep it logically awesome.", "repository": {"full_name": "acme/jobs"}})
+    s, out = deliver("ping", {"zen": "Keep it logically awesome.", "repository": {"full_name": repo}})
     check("webhook: ping", s == 200 and out.get("ok"), f"HTTP {s} {out}")
     s, _ = deliver("ping", {"zen": "x"}, sig="sha256=" + "0" * 64)
     check("webhook: bad signature -> 401", s == 401, f"HTTP {s}")
-    s, _ = deliver("push", {"ref": "refs/heads/main", "repository": {"full_name": "acme/elsewhere"},
+    s, _ = deliver("push", {"ref": "refs/heads/main", "repository": {"full_name": "elsewhere/jobs"},
                             "installation": {"id": INSTALLATION}})
     check("webhook: repository not allowed -> 403", s == 403, f"HTTP {s}")
 
     # first push: full sync of two projects, one job scheduled
     u_hello, u_b, u_c = f"{tag}-hello", f"{tag}-b", f"{tag}-c"
     config = f"projects:\n- path: jobs/a\n  project: {p1}\n- path: jobs/b\n  project: {p2}\n"
-    fake.commit("acme/jobs", "main", {
+    fake.commit(repo, "main", {
         "kestrel.yaml": config,
         "README.md": "not a job",
         "jobs/a/hello.yaml": job(u_hello, "hello", "echo hello-from-git",
@@ -250,7 +253,7 @@ def main():
         "jobs/b/c.yml": job(u_c, "c", "echo c"),
     })
     t0 = time.time()
-    s, out = push("acme/jobs")
+    s, out = push(repo)
     live = time.time() - t0
     check("push 1: full sync", s == 200 and out.get("full") and len(out.get("upserted", [])) == 3 and out.get("deleted") == [],
           f"HTTP {s} {out}")
@@ -263,16 +266,16 @@ def main():
     check("push 1: other project", (get_job(u_b) or {}).get("project") == p2 and get_job(u_c))
 
     # redelivery of the same push: nothing to do
-    s, out = push("acme/jobs")
+    s, out = push(repo)
     check("push 1 redelivered: no-op", s in (200, 202) and not out.get("upserted"), f"HTTP {s} {out}")
 
     # PR with problems: bad cron, missing uuid, invalid YAML, uuid owned by the other project's file
-    fake.change("acme/jobs", "feature", {
+    fake.change(repo, "feature", {
         "jobs/a/hello.yaml": job(u_hello, "hello", "echo hello-v2", "\n  schedule:\n    crontab: 'not a cron'"),
         "jobs/a/new.yaml": "- name: no-uuid\n  sequence:\n    commands:\n    - exec: echo x\n",
         "jobs/a/broken.yaml": "- name: [unclosed\n",
     }, base="main")
-    s, out, run = pr(fake, "acme/jobs", 7, "main", "feature")
+    s, out, run = pr(fake, repo, 7, "main", "feature")
     ann = sorted((a["path"], a["start_line"]) for a in (run or {}).get("annotations", []))
     check("PR 7: check run failure", s == 200 and run and run.get("conclusion") == "failure" and run.get("name") == "Kestrel",
           f"HTTP {s} {out} conclusion={run and run.get('conclusion')}")
@@ -284,20 +287,20 @@ def main():
     check("PR 7: nothing saved by the check", "echo hello-from-git" in export(api, T, u_hello))
 
     # PR that is fine: update hello, remove b.yaml (the summary names the job a merge would delete)
-    fake.change("acme/jobs", "good", {
+    fake.change(repo, "good", {
         "jobs/a/hello.yaml": job(u_hello, "hello", "echo hello-v2",
                                  "\n  schedule:\n    crontab: '0 0/5 * ? * * *'\n  scheduleEnabled: true"),
         "jobs/b/b.yaml": None,
     }, base="main")
-    s, out, run = pr(fake, "acme/jobs", 8, "main", "good")
+    s, out, run = pr(fake, repo, 8, "main", "good")
     summary = ((run or {}).get("output") or {}).get("summary", "")
     check("PR 8: check run success", run and run.get("conclusion") == "success", f"HTTP {s} {out} {summary[:200]}")
     check("PR 8: summary lists the job a merge deletes", "jobs/b/b.yaml" in summary, summary[:300])
 
     # merge = the main branch moves to the PR head; incremental sync
-    fake.branches[("acme/jobs", "main")] = list(fake.branches[("acme/jobs", "good")])
+    fake.branches[(repo, "main")] = list(fake.branches[(repo, "good")])
     t0 = time.time()
-    s, out = push("acme/jobs")
+    s, out = push(repo)
     live = time.time() - t0
     check("push 2: incremental update + delete", s == 200 and not out.get("full") and out.get("upserted") == ["jobs/a/hello.yaml"]
           and out.get("deleted") == [u_b], f"HTTP {s} {out}")
@@ -306,10 +309,10 @@ def main():
     check("push 2: merge -> job live < 60 s", live < 60, f"{live:.1f}s")
 
     # a second repository may not take over a job synced from acme/jobs
-    fake.commit("other/repo", "main", {"kestrel.yaml": f"projects:\n- path: ''\n  project: {p1}\n",
+    fake.commit(other, "main", {"kestrel.yaml": f"projects:\n- path: ''\n  project: {p1}\n",
                                         "steal.yaml": job(u_hello, "hello", "echo stolen")})
-    s, out = push("other/repo")
-    check("other/repo: claiming a synced uuid -> 422", s == 422 and any("acme/jobs" in p for p in out.get("problems", [])),
+    s, out = push(other)
+    check("other/repo: claiming a synced uuid -> 422", s == 422 and any(repo in p for p in out.get("problems", [])),
           f"HTTP {s} {out}")
     check("other/repo: job untouched", "echo hello-v2" in export(api, T, u_hello))
 

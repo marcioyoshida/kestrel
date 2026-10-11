@@ -77,7 +77,7 @@ public class GitHubSync {
         if (head.equals(last)) {
             return Result.skip("already synced " + short7(head));
         }
-        GitHubClient.Compare cmp = last == null ? null : github.compare(installation, repo, last, head);
+        GitHubClient.Compare cmp = last == null ? null : compare(installation, repo, last, head);
         boolean incremental = cmp != null && cmp.complete() && "ahead".equals(cmp.status())
                 && cmp.files().stream().noneMatch(f -> RepoConfig.FILE.equals(f.path()) || RepoConfig.FILE.equals(f.previousPath()));
         Result r = incremental ? incremental(installation, repo, config, last, head, cmp.files())
@@ -89,6 +89,19 @@ public class GitHubSync {
                 repo, branch, short7(head), r.full() ? "full" : "incremental", r.upserted().size(), r.deleted().size(),
                 r.problems().size());
         return r;
+    }
+
+    /** @return null (a full sync) if GitHub no longer has the last synced commit */
+    private GitHubClient.Compare compare(long installation, String repo, String last, String head) {
+        try {
+            return github.compare(installation, repo, last, head);
+        } catch (GitHubException e) {
+            if (e.getStatus() != 404) {
+                throw e;
+            }
+            LOG.warn("Kestrel GitHub: {} no longer has the last synced commit {}; syncing the whole tree", repo, short7(last));
+            return null;
+        }
     }
 
     private Result incremental(long inst, String repo, RepoConfig config, String last, String head, List<ChangedFile> files) {
