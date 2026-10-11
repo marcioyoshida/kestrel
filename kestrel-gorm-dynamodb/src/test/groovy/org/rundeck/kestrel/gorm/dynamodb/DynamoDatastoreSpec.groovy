@@ -271,6 +271,30 @@ class DynamoDatastoreSpec extends Specification {
         versionOf(ids[2]) == keptVersion
     }
 
+    def "starting an execution of a loaded job does not rewrite the job (ExecutionJob shape; concurrent firings conflicted)"() {
+        given:
+        def jobId = TJob.withNewSession {
+            def j = new TJob(uuid: 'fire-j', project: 'fire', jobName: 'n').save(failOnError: true)
+            new TOption(name: 'a', job: j).save(failOnError: true)
+            j.id
+        }
+        def jobVersion = { TJob.withNewSession { TJob.get(jobId).version } }
+        def before = jobVersion()
+
+        when: 'the job is loaded, its options read, and an execution of it saved and flushed'
+        def execId = TJob.withNewSession {
+            TJob.withTransaction {
+                def j = TJob.get(jobId)
+                assert j.options*.name == ['a']
+                new TExec(project: 'fire', status: 'running', user: 'u', dateStarted: new Date(), job: j).save(flush: true, failOnError: true).id
+            }
+        }
+
+        then: 'the job item is untouched, and the execution is still found through the job'
+        jobVersion() == before
+        TJob.withNewSession { TJob.get(jobId).execs*.id } == [execId]
+    }
+
     def "inside another manager's transaction, GORM calls share one session flushed before commit (not when read-only or rolled back)"() {
         given:
         def id = TJob.withNewSession { new TJob(uuid: 'shared-s', project: 'shared', jobName: 'a').save(failOnError: true).id }
@@ -527,6 +551,42 @@ class DynamoDatastoreSpec extends Specification {
 
         then:
         names == ['a', 'b']
+    }
+
+    def "custom validators run (an invalid option valuesUrl was accepted)"() {
+        when:
+        def result = TOption.withNewSession {
+            def o = new TOption(name: 'v', valuesUrl: 'not-a-url', job: new TJob(uuid: 'val-j', project: 'val', jobName: 'n'))
+            [deep: o.validate(deepValidate: false), code: o.errors.getFieldError('valuesUrl')?.code]
+        }
+
+        then:
+        !result.deep
+        result.code == 'option.valuesUrl.invalid.message'
+    }
+
+    def "unique constraints are enforced (duplicate job uuids were imported)"() {
+        given:
+        TToken.withNewSession { new TToken(token: 'uniq-1', mode: 'm', creator: 'c').save(failOnError: true) }
+
+        when:
+        def dupe = TToken.withNewSession {
+            def t = new TToken(token: 'uniq-1', mode: 'm', creator: 'd')
+            [valid: t.validate(), saved: t.save(flush: true) != null, errors: t.errors.getFieldError('token')?.code]
+        }
+
+        then:
+        !dupe.valid
+        !dupe.saved
+        dupe.errors == 'unique'
+        TToken.withNewSession { TToken.findAllByToken('uniq-1').size() } == 1
+
+        and: 'an update of the same row is not a duplicate of itself'
+        TToken.withNewSession {
+            def t = TToken.findByToken('uniq-1')
+            t.mode = 'n'
+            t.validate()
+        }
     }
 
     def "ping reads the id-block table (readiness, M2d)"() {

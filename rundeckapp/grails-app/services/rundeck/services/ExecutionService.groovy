@@ -3562,9 +3562,16 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                     loglevel     : execution.loglevel,
                     filter       : execution.filter //TODO: failed nodes?
                 ]
-                def result = retryExecuteJob(scheduledExecution, retryContext.authContext,
-                                             retryContext.user, input, retryContext.secureOpts,
-                                             retryContext.secureOptsExposed, count + 1,execution.id,originalId)
+                def startRetry = {
+                    retryExecuteJob(scheduledExecution, retryContext.authContext,
+                                    retryContext.user, input, retryContext.secureOpts,
+                                    retryContext.secureOptsExposed, count + 1,execution.id,originalId)
+                }
+                // Kestrel (M2d): on DynamoDB every flush is visible at once. In this session, the
+                // retry's save(flush) would also write this execution as failed-with-retry before
+                // its retry link exists; in its own session it writes only the new execution.
+                def result = org.rundeck.kestrel.app.KestrelStorage.isDynamo() ?
+                    Execution.withNewSession { startRetry() } : startRetry()
 
                 log.trace("saveExecutionState_currentTransaction: retry execute job (${scheduledExecution.getJobName()} - id: ${execution.id}) result status: ${result}")
                 if (result.success) {

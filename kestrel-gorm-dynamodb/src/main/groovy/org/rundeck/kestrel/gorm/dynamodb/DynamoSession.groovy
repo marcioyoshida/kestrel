@@ -201,6 +201,7 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
     private Object comparable(PersistentProperty p, Object v) {
         if (v == null) return null
         if (v instanceof PersistentCollection) {
+            if (isInverseOfToOne(p)) return CLEAN
             PersistentCollection c = (PersistentCollection) v
             return c.isInitialized() && c.isDirty() ? DIRTY : CLEAN
         }
@@ -213,6 +214,17 @@ class DynamoSession extends AbstractSession<DynamoDbClient> {
         if (v instanceof Collection) return new ArrayList((Collection) v)
         if (v instanceof Map) return new LinkedHashMap((Map) v)
         v
+    }
+
+    /**
+     * The many side of a bidirectional one-to-many (ScheduledExecution.executions, inverse of
+     * Execution.scheduledExecution): the child item holds the link and saving the child maintains
+     * the collection index, so a change there never needs the owner rewritten. As Hibernate's
+     * inverse collections. Saving an execution adds it to its job's loaded collection; counting
+     * that as a change rewrote the job on every run, and concurrent runs then conflicted.
+     */
+    private static boolean isInverseOfToOne(PersistentProperty p) {
+        p instanceof Association && ((Association) p).bidirectional && ((Association) p).inverseSide instanceof ToOne
     }
 
     private Object idOf(Object v) {

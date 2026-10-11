@@ -21,6 +21,11 @@ import org.grails.datastore.mapping.simple.connections.SimpleMapConnectionSource
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.core.env.PropertyResolver
 import org.grails.datastore.gorm.GormEnhancer
+import org.grails.datastore.gorm.validation.constraints.MappingContextAwareConstraintFactory
+import org.grails.datastore.gorm.validation.constraints.builtin.UniqueConstraint
+import org.grails.datastore.gorm.validation.constraints.registry.DefaultValidatorRegistry
+import org.grails.datastore.gorm.validation.registry.support.ValidatorRegistries
+import org.grails.datastore.mapping.validation.ValidatorRegistry
 import org.grails.datastore.gorm.events.ConfigurableApplicationEventPublisher
 import org.grails.datastore.gorm.events.DefaultApplicationEventPublisher
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
@@ -70,6 +75,7 @@ class DynamoDatastore extends SimpleMapDatastore {
         this.ids = new IdAllocator(tables, 100L)
         this.publisher = publisher
         markIndexed(indexed ?: [])
+        registerUniqueConstraint()
         if (createTables) {
             tables.ensureAll(mappingContext.persistentEntities.findAll { it.root }.collect { familyOf(it) })
         }
@@ -99,6 +105,25 @@ class DynamoDatastore extends SimpleMapDatastore {
         def field = GormEnhancer.getDeclaredField('DATASTORES_BY_TYPE')
         field.accessible = true
         ((Map) field.get(null)).remove(this.getClass())
+    }
+
+    /**
+     * {@code unique: true} (ScheduledExecution.uuid, Project.name, AuthToken.token, Storage.pathSha)
+     * is a no-op unless the datastore registers it: Hibernate registers its own, the key-value base
+     * does not. Without it a job imported twice with the same uuid was created twice. GORM's
+     * generic constraint checks with a query (an index lookup here) at validation, as Hibernate's
+     * does before its database index.
+     */
+    private void registerUniqueConstraint() {
+        ValidatorRegistry registry = mappingContext.validatorRegistry
+        if (registry == null) {
+            registry = ValidatorRegistries.createValidatorRegistry(mappingContext, connectionSources.defaultConnectionSource.settings)
+            mappingContext.validatorRegistry = registry
+        }
+        if (registry instanceof DefaultValidatorRegistry) {
+            DefaultValidatorRegistry r = (DefaultValidatorRegistry) registry
+            r.addConstraintFactory(new MappingContextAwareConstraintFactory(UniqueConstraint, r.messageSource, mappingContext))
+        }
     }
 
     /** The key-value family of a root entity, as the persister names it (mapped family, else class name). */

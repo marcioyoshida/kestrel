@@ -126,20 +126,24 @@ jobs:
           pattern: api-*
           merge-multiple: true
       - name: No test fails on dynamodb that passes on rdbms
+        shell: bash   # -eo pipefail: the verdict must survive the tee
         run: |
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import glob, json, sys
+          import glob, json, re, sys
+          # parameterized test names embed random job uuids; compare them without
+          uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
           res = {'dynamodb': {}, 'rdbms': {}}
           for f in glob.glob('api-*.json'):
-              res[f.split('-')[1]].update(json.load(open(f)))
+              res[f.split('-')[1]].update({uuid.sub('<uuid>', k): v for k, v in json.load(open(f)).items()})
           d, r = res['dynamodb'], res['rdbms']
-          regress = sorted(k for k, v in d.items() if v == 'failed' and r.get(k) == 'passed')
+          # a stepwise spec skips the rest after a failure: a skip there is a regression too
+          regress = sorted(k for k, v in d.items() if v in ('failed', 'skipped') and r.get(k) == 'passed')
           missing = sorted(k for k, v in r.items() if v == 'passed' and k not in d)
           both = sorted(k for k, v in d.items() if v == 'failed' and r.get(k) == 'failed')
           count = lambda m, s: sum(v == s for v in m.values())
           print(f"### API suite: dynamodb {count(d, 'passed')} passed / {count(d, 'failed')} failed; "
                 f"rdbms {count(r, 'passed')} passed / {count(r, 'failed')} failed")
-          print(f"**Regressions on dynamodb (pass on rdbms): {len(regress)}**")
+          print(f"**Regressions on dynamodb (pass on rdbms, failed or skipped on dynamodb): {len(regress)}**")
           for k in regress: print(f"- {k}")
           if missing:
               print(f"**Passed on rdbms, did not run on dynamodb: {len(missing)}**")

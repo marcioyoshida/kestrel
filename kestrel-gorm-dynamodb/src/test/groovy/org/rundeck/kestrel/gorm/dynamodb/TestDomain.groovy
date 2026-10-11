@@ -14,7 +14,7 @@ class TJob {
     Date dateCreated
     Date lastRun
     Long version
-    static hasMany = [options: TOption]
+    static hasMany = [options: TOption, execs: TExec]  // execs: inverse of TExec.job, as ScheduledExecution.executions
     static constraints = {
         groupPath nullable: true
         dateCreated nullable: true
@@ -26,7 +26,16 @@ class TJob {
 class TOption {
     String name
     Boolean required = false
+    String valuesUrl
     static belongsTo = [job: TJob]
+    static constraints = {  // as Option.valuesUrl
+        valuesUrl(nullable: true, validator: { String val, TOption obj ->
+            if (val) {
+                try { new URL(val) } catch (MalformedURLException e) { return 'option.valuesUrl.invalid.message' }
+            }
+            true
+        })
+    }
 }
 
 @Entity
@@ -70,6 +79,9 @@ class TToken {
     String token
     String mode
     String creator
+    static constraints = {
+        token unique: true  // as AuthToken.token, ScheduledExecution.uuid, Project.name
+    }
 }
 
 /** Like Rundeck's Workflow: an ordered list of steps. */
