@@ -183,6 +183,9 @@ class FakeCluster:
     def pod_exits(self, name):
         return [a["exit"] for a in self._state()["pods"].get(name, [])]
 
+    def pod_attempts(self, name):
+        return len(self.pod_exits(name))
+
     def secret(self, name):
         return next((o for o in self.objects("secrets") if o["metadata"]["name"] == name), None)
 
@@ -216,6 +219,9 @@ class FakeCluster:
             return [ln.strip()[:160] for ln in fh if " ERROR " in ln]
 
     def role_names(self):
+        return {}
+
+    def timeline(self, name):
         return {}
 
 
@@ -254,6 +260,11 @@ class EksCluster:
             out.append(st.get("state", {}).get("terminated", {}).get("exitCode"))
         return out
 
+    def pod_attempts(self, name):
+        """Pods the Job ran: a force-deleted pod is gone, but the Job counted it as failed."""
+        st = self._get("job", name).get("status", {})
+        return st.get("failed", 0) + st.get("succeeded", 0) + st.get("active", 0)
+
     def secret(self, name):
         out = self.k("get", "secret", name, "-o", "json", check=False)
         return json.loads(out) if out else None
@@ -289,6 +300,23 @@ class EksCluster:
 
     def role_names(self):
         return {c: self.v.out("KestrelRef", f"Isolated{c.capitalize()}RoleName") for c in ("default", "probe")}
+
+    def timeline(self, name):
+        """Seconds from the Job's creation to its first pod being scheduled and its container starting."""
+        import datetime
+        ts = lambda t: datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").timestamp()
+        job = self._get("job", name)
+        pods = sorted(self._get("pods", "-l", f"batch.kubernetes.io/job-name={name}").get("items", []),
+                      key=lambda p: p["metadata"]["creationTimestamp"])
+        if not job or not pods:
+            return {}
+        t0, pod = ts(job["metadata"]["creationTimestamp"]), pods[0]
+        sched = next((c["lastTransitionTime"] for c in pod["status"].get("conditions", []) if c["type"] == "PodScheduled"), None)
+        st = next((c for c in pod["status"].get("containerStatuses", []) if c["name"] == "rundeck"), {})
+        started = (st.get("state", {}).get("running") or st.get("state", {}).get("terminated") or {}).get("startedAt")
+        return {"pod scheduled": ts(sched) - t0 if sched else None,
+                "container started": ts(started) - t0 if started else None,
+                "node": pod["spec"].get("nodeName")}
 
 
 def wait_for(fn, limit=300, step=2):
@@ -414,6 +442,8 @@ def run_checks(cl):
     queued_s = (after.get("date-started", {}).get("unixtime", 0) - first.get("date-started", {}).get("unixtime", 0)) / 1000
     print(f"      queued {queued_s:.0f} s (pod scheduling + application start), run-now to done {elapsed:.0f} s")
     TIMES.append(("run-now queued (class default)", queued_s))
+    for k, v in cl.timeline(jname).items():
+        print(f"      Job -> {k}: {v if isinstance(v, str) or v is None else f'{v:.0f} s'}")
 
     check("pool job: runs on a web pod, no Job", done(e_pool, 180) == "succeeded" and cl.job_for(e_pool) is None
           and execution(e_pool).get("serverUUID") in cl.web_uuids, execution(e_pool).get("serverUUID"))
@@ -486,8 +516,8 @@ def run_checks(cl):
     wait_for(lambda: cl.job_result(kname), 400)
     exits = cl.pod_exits(kname)
     check("pod loss: the replacement pod ends the run instead of running it again",
-          len(exits) == 2 and exits[-1] == 3 and status not in ("succeeded", "running", "queued")
-          and output(e_killed).count("killed-started") == 1, f"{status} exits={exits}")
+          cl.pod_attempts(kname) == 2 and exits and exits[-1] == 3 and status not in ("succeeded", "running", "queued")
+          and output(e_killed).count("killed-started") == 1, f"{status} pods={cl.pod_attempts(kname)} exits={exits}")
 
     # ---- a Job deleted before its pod ran: the sweeper ends the queued execution
     e_swept = run("swept")
