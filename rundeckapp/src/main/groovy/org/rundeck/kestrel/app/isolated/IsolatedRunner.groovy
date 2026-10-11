@@ -17,6 +17,7 @@ import rundeck.ScheduledExecution
 import rundeck.quartzjobs.ExecutionJob
 import rundeck.services.ExecutionService
 import rundeck.services.FrameworkService
+import rundeck.services.JobSchedulerService
 import rundeck.services.LogFileStorageService
 import rundeck.services.ScheduledExecutionService
 
@@ -45,6 +46,7 @@ class IsolatedRunner implements Runnable {
     QuartzLauncher kestrelLauncher
     FrameworkService frameworkService
     ScheduledExecutionService scheduledExecutionService
+    JobSchedulerService jobSchedulerService
     ExecutionService executionService
     LogFileStorageService logFileStorageService
     BaseAuthContextProvider rundeckAuthContextProvider
@@ -125,6 +127,10 @@ class IsolatedRunner implements Runnable {
             def auth = rundeckAuthContextProvider.getAuthContextForUserAndRolesAndProject(x.user, x.userRoles, x.project)
             scheduledExecutionService.scheduleTempJob(se, x.user, auth, x,
                 secure.secureOpts as Map, secure.secureOptsExposed as Map, x.retryAttempt ?: 0)
+            // Upstream schedules run-now "pending" and releases it when the execution is next
+            // saved; here nothing saves it after this point, so release it now.
+            def ident = scheduledExecutionService.getJobIdent(se, x)
+            jobSchedulerService.reschedulePendingJob(ident.jobname as String, ident.groupname as String)
         }
         drain(server)
         exitCodeFor(id)

@@ -546,6 +546,7 @@ beans={
             kestrelLauncher = ref('kestrelLauncher')
             frameworkService = ref('frameworkService')
             scheduledExecutionService = ref('scheduledExecutionService')
+            jobSchedulerService = ref('jobSchedulerService')
             executionService = ref('executionService')
             logFileStorageService = ref('logFileStorageService')
             rundeckAuthContextProvider = ref('rundeckAuthContextProvider')
