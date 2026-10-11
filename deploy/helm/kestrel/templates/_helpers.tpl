@@ -244,6 +244,20 @@ spec:
         - name: RUNDECK_CONFIG_STORAGE_CONVERTER_1_CONFIG_PASSWORD
           valueFrom: { secretKeyRef: { name: {{ . }}, key: password } }
         {{- end }}
+        {{- if and (eq $role "web") $.Values.github.enabled }}
+        {{- $g := $.Values.github }}
+        - { name: KESTREL_GITHUB_APP_ID, value: {{ required "github.appId is required" $g.appId | quote }} }
+        - { name: KESTREL_GITHUB_REPOS, value: {{ required "github.repos is required" ($g.repos | join ",") | quote }} }
+        - { name: KESTREL_GITHUB_USER, value: {{ $g.user | quote }} }
+        - { name: KESTREL_GITHUB_ROLES, value: {{ required "github.roles is required" ($g.roles | join ",") | quote }} }
+        {{- with $g.apiUrl }}
+        - { name: KESTREL_GITHUB_API_URL, value: {{ . | quote }} }
+        {{- end }}
+        - name: KESTREL_GITHUB_PRIVATE_KEY
+          valueFrom: { secretKeyRef: { name: {{ required "github.existingSecret is required (keys: private-key, webhook-secret)" $g.existingSecret }}, key: private-key } }
+        - name: KESTREL_GITHUB_WEBHOOK_SECRET
+          valueFrom: { secretKeyRef: { name: {{ $g.existingSecret }}, key: webhook-secret } }
+        {{- end }}
         {{- with $.Values.web.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

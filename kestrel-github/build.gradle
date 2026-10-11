@@ -1,0 +1,30 @@
+/**
+ * Kestrel GitHub integration (ADR 0001 §5): GitHub App authentication, webhook signatures, the
+ * small slice of the REST API Kestrel uses (compare, contents, trees, check runs) and the
+ * repository's kestrel.yaml. Plain Java on java.net.http so it tests without Grails; wired into
+ * rundeckapp by org.rundeck.kestrel.app.github.*. Jackson and SnakeYAML come from rundeckapp.
+ */
+apply from: "../gradle/java-version.gradle"
+apply plugin: 'groovy'
+apply plugin: 'java-library'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
+    compileOnly "org.yaml:snakeyaml:${snakeyamlVersion}"
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    testImplementation "com.fasterxml.jackson.core:jackson-databind:${jacksonDatabindVersion}"
+    testImplementation "org.yaml:snakeyaml:${snakeyamlVersion}"
+    testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    testImplementation "org.spockframework:spock-core:${spockVersion}"
+    testImplementation "org.apache.groovy:groovy-all:${groovyVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}

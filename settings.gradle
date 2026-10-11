@@ -64,7 +64,8 @@ include	'rundeck-storage',
     'plugins:jsch-plugin',
     'rundeck-data-models',
     'kestrel-scheduler',
-    'kestrel-gorm-dynamodb'
+    'kestrel-gorm-dynamodb',
+    'kestrel-github'
 
 def projectFeatureEnabled = { String feature, Boolean defaultVal ->
     try {

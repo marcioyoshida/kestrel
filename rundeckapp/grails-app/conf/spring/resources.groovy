@@ -205,6 +205,8 @@ import org.rundeck.kestrel.app.KestrelSchedulerRuntime
 import org.rundeck.kestrel.app.KestrelSettings
 import org.rundeck.kestrel.app.KubernetesJobSchedulesManager
 import org.rundeck.kestrel.app.QuartzLauncher
+import org.rundeck.kestrel.app.github.KestrelGitHub
+import org.rundeck.kestrel.app.github.RundeckJobTarget
 import rundeckapp.init.servlet.JettyServletHstsCustomizer
 
 import javax.security.auth.login.Configuration
@@ -566,6 +568,20 @@ beans={
             scheduledExecutionService = ref('scheduledExecutionService')
             frameworkService = ref('frameworkService')
             quartzScheduler = ref('quartzScheduler')
+        }
+    }
+
+    // Kestrel (ADR 0001 §5): GitHub App push sync and pull-request checks, when kestrel.github.app-id is set
+    if (KestrelGitHub.enabled(grailsApplication.config)) {
+        kestrelGitHubJobTarget(RundeckJobTarget) {
+            scheduledExecutionService = ref('scheduledExecutionService')
+            jobMetadataService = ref('jobMetadataService')
+            frameworkService = ref('frameworkService')
+            rundeckAuthContextProcessor = ref('rundeckAuthContextProcessor')
+            configStorageService = ref('configStorageService')
+        }
+        kestrelGitHub(KestrelGitHub, grailsApplication.config, ref('kestrelGitHubJobTarget')) { bean ->
+            bean.factoryMethod = 'from'
         }
     }
 

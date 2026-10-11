@@ -118,6 +118,19 @@ auth:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { memory: 128Mi }
 
+# GitHub App (ADR 0001 §5): a push to a listed repository syncs its job files into Rundeck, and
+# every pull request gets a "Kestrel" check run. The App's webhook URL is
+# https://<host>/api/<api_version>/kestrel/github/webhook (HMAC-signed; /api/* bypasses sign-in).
+github:
+  enabled: false
+  appId: ""
+  repos: []                  # owner/repo or owner/*; pushes from any other repository are refused
+  user: kestrel-github       # the Rundeck identity jobs are imported as
+  roles: []                  # its roles; ACLs decide which projects a repository may write to
+  apiUrl: ""                 # default https://api.github.com (GitHub Enterprise: https://<host>/api/v3)
+  # Secret keys: private-key (the App's PEM), webhook-secret
+  existingSecret: ""
+
 service:
   type: ClusterIP
   port: 4440

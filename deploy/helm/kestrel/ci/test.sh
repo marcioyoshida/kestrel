@@ -48,6 +48,16 @@ other=$(KESTREL_NAMESPACE=kestrel KESTREL_POD_NAME=kestrel-web-1 bash -ec "$scri
 [ "$uuid" != "$other" ] || { echo "pods share a UUID"; exit 1; }
 echo "ok   per-pod server UUIDs: kestrel-web-0=$uuid kestrel-web-1=$other"
 
+# GitHub App (M3): web pods only, credentials from the Secret.
+GH=(--set github.enabled=true --set github.appId=123 --set 'github.repos={acme/jobs,other/*}'
+    --set 'github.roles={kestrel-github}' --set github.existingSecret=kestrel-github)
+gout=$(helm template kestrel . -n kestrel "${K8S_REF[@]}" "${GH[@]}")
+kubeconform -strict -summary -kubernetes-version "$K8S" -skip TargetGroupBinding - <<<"$gout"
+[ "$(grep -c 'name: KESTREL_GITHUB_PRIVATE_KEY' <<<"$gout")" -eq 1 ]   # web, not the runner
+grep -q 'name: KESTREL_GITHUB_REPOS, value: "acme/jobs,other/\*"' <<<"$gout"
+grep -q 'secretKeyRef: { name: kestrel-github, key: webhook-secret }' <<<"$gout"
+! grep -q KESTREL_GITHUB <<<"$kout"
+
 expect_fail() {  # <description> <expected message fragment> <helm --set args...>
   local desc=$1 msg=$2; shift 2
   if err=$(helm template kestrel . -f "$REF" "$@" 2>&1); then
@@ -74,4 +84,7 @@ expect_fail "k8s mode, zero runners"      "runner.replicas"                    -
 expect_fail "unknown log store"            "kestrel-s3 or org.rundeck.amazon-s3" --set logStorage.s3.provider=gcs
 expect_fail "unknown storage mode"         "rdbms or dynamodb"                  --set storage.mode=mongo
 expect_fail "dynamodb without prefix"     "tablePrefix is required"            --set storage.mode=dynamodb
+expect_fail "github without repos"        "github.repos is required"           --set github.enabled=true --set github.appId=1 --set 'github.roles={r}' --set github.existingSecret=s
+expect_fail "github without roles"        "github.roles is required"           --set github.enabled=true --set github.appId=1 --set 'github.repos={a/b}' --set github.existingSecret=s
+expect_fail "github without secret"       "github.existingSecret is required"  --set github.enabled=true --set github.appId=1 --set 'github.repos={a/b}' --set 'github.roles={r}'
 echo "chart checks passed"

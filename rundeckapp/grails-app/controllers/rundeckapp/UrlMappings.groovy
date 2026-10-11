@@ -26,6 +26,9 @@ class UrlMappings {
         "/monitoring/health/readiness"(controller: 'monitoring', action: 'readiness')
         "/monitoring/info"(controller: 'monitoring', action: 'info')
         "/monitoring/threaddump"(controller: 'monitoring', action: 'threaddump')
+
+        // Kestrel (ADR 0001 §5): GitHub App webhook, authenticated by its HMAC signature
+        "/api/$api_version/kestrel/github/webhook"(controller: 'kestrelGithub', action: 'webhook')
         
         "/$controller/$action?/$id?" {
             constraints {

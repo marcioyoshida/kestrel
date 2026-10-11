@@ -182,7 +182,7 @@ jobs:
           ! git grep -q pd-internal.com -- '*package-lock.json'
       - name: Kestrel unit tests
         run: |
-          ./gradlew :kestrel-scheduler:test :kestrel-scheduler:shadowJar :kestrel-gorm-dynamodb:shadowJar \
+          ./gradlew :kestrel-scheduler:test :kestrel-github:test :kestrel-scheduler:shadowJar :kestrel-gorm-dynamodb:shadowJar \
             :rundeckapp:test --tests 'org.rundeck.security.RundeckPreauthenticationRequestHeaderFilterTest'
           kestrel-scheduler/check-shaded-jar.sh kestrel-scheduler
           kestrel-scheduler/check-shaded-jar.sh kestrel-gorm-dynamodb

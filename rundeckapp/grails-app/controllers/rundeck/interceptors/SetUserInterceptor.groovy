@@ -52,6 +52,10 @@ class SetUserInterceptor {
         if (request.pathInfo?.startsWith("/error")) {
             return true
         }
+        if (controllerName == 'kestrelGithub' && actionName == 'webhook') {
+            // Kestrel GitHub App webhook: GitHub signs it (HMAC); it carries no Rundeck token or session
+            return true
+        }
         if (request.api_version &&
             request.remoteUser &&
             !(configurationService.getBoolean("security.apiCookieAccess.enabled",false))){
