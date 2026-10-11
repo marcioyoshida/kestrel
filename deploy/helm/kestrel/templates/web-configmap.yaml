@@ -24,6 +24,10 @@ data:
   {{- with .Values.scheduler.trigger.arch }}
   KESTREL_TRIGGER_ARCH: {{ . | quote }}
   {{- end }}
+  {{- if .Values.isolated.enabled }}
+  KESTREL_ISOLATED_CLASSES: {{ keys .Values.isolated.classes | sortAlpha | join "," | quote }}
+  KESTREL_ISOLATED_POD_TEMPLATE_PREFIX: {{ printf "%s-isolated-" (include "kestrel.fullname" .) | quote }}
+  {{- end }}
   {{- end }}
   RUNDECK_SERVER_SESSION_TIMEOUT: {{ .Values.web.sessionTimeoutSeconds | quote }}
   JVM_MAX_RAM_PERCENTAGE: {{ .Values.web.jvmMaxRamPercentage | quote }}

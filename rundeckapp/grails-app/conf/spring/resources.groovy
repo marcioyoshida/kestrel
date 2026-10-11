@@ -206,6 +206,9 @@ import org.rundeck.kestrel.app.KestrelSettings
 import org.rundeck.kestrel.app.KubernetesJobSchedulesManager
 import org.rundeck.kestrel.app.QuartzLauncher
 import org.rundeck.kestrel.app.github.KestrelGitHub
+import org.rundeck.kestrel.app.isolated.IsolatedRunner
+import org.rundeck.kestrel.app.isolated.KestrelIsolated
+import org.rundeck.kestrel.app.isolated.KestrelIsolatedPluginFactory
 import org.rundeck.kestrel.app.github.RundeckJobTarget
 import rundeckapp.init.servlet.JettyServletHstsCustomizer
 
@@ -530,6 +533,29 @@ beans={
         rundeckJobScheduleManager(KestrelJobScheduleManager) {
             quartzManager = ref('kestrelQuartzJobScheduleManager')
             kestrelHandoffRegistry = ref('kestrelHandoffRegistry')
+            kestrelSettings = ref('kestrelSettings')
+            kestrelIsolated = ref('kestrelIsolated')
+        }
+        // ADR 0006: isolated jobs (a Kubernetes Job per run), when runner classes are configured
+        kestrelIsolated(KestrelIsolated) {
+            kestrelSettings = ref('kestrelSettings')
+        }
+        kestrelIsolatedRunner(IsolatedRunner) {
+            kestrelSettings = ref('kestrelSettings')
+            kestrelJobCatalog = ref('kestrelJobCatalog')
+            kestrelLauncher = ref('kestrelLauncher')
+            frameworkService = ref('frameworkService')
+            scheduledExecutionService = ref('scheduledExecutionService')
+            executionService = ref('executionService')
+            logFileStorageService = ref('logFileStorageService')
+            rundeckAuthContextProvider = ref('rundeckAuthContextProvider')
+            quartzScheduler = ref('quartzScheduler')
+        }
+        if (kestrel.isolatedEnabled) {
+            kestrelIsolatedPlugin(KestrelIsolatedPluginFactory) {
+                pluginRegistry = ref('rundeckPluginRegistry')
+                kestrelSettings = ref('kestrelSettings')
+            }
         }
         rundeckJobSchedulesManager(KubernetesJobSchedulesManager) {
             scheduledExecutionService = ref('scheduledExecutionService')
@@ -538,6 +564,7 @@ beans={
             kestrelSchedulerRuntime = ref('kestrelSchedulerRuntime')
         }
         kestrelJobCatalog(GormJobCatalog) {
+            kestrelSettings = ref('kestrelSettings')
             scheduledExecutionService = ref('scheduledExecutionService')
             executionService = ref('executionService')
             frameworkService = ref('frameworkService')
@@ -558,6 +585,8 @@ beans={
             quartzScheduler = ref('quartzScheduler')
             authorizationService = ref('authorizationService')
             executionService = ref('executionService')
+            kestrelIsolated = ref('kestrelIsolated')
+            kestrelIsolatedRunner = ref('kestrelIsolatedRunner')
         }
     } else {
         rundeckJobScheduleManager(QuartzJobScheduleManagerService){

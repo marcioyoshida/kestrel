@@ -110,6 +110,16 @@ ingress: { enabled: false }
 targetGroupBinding: { enabled: true, targetGroupArn: $TG_ARN }
 storage: { mode: $STORAGE_MODE, dynamodb: { tablePrefix: "$DATA_PREFIX" } }
 VALUES
+if [ "$SCHEDULER_MODE" = kubernetes ]; then
+  # Isolated runner classes (ADR 0006); KestrelRef binds kestrel-isolated-<class> to its own IAM role.
+  cat >> "$tmp/values.yaml" <<VALUES
+isolated:
+  enabled: true
+  classes:
+    default: {}
+    probe: { activeDeadlineSeconds: 1800, resources: { requests: { cpu: "500m", memory: 2Gi }, limits: { memory: 2Gi } } }
+VALUES
+fi
 
 log "helm upgrade --install ($IMAGE_REPOSITORY:$IMAGE_TAG)"
 helm --kube-context "$KCTX" upgrade --install "$RELEASE" "$ROOT/deploy/helm/kestrel" -n "$NS" \

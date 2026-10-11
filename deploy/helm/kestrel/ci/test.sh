@@ -58,6 +58,26 @@ grep -q 'name: KESTREL_GITHUB_REPOS, value: "acme/jobs,other/\*"' <<<"$gout"
 grep -q 'secretKeyRef: { name: kestrel-github, key: webhook-secret }' <<<"$gout"
 ! grep -q KESTREL_GITHUB <<<"$kout"
 
+# Isolated jobs (M3, ADR 0006): a PodTemplate per runner class, Job-derived server UUIDs, web RBAC.
+ISO=(--set isolated.enabled=true --set isolated.classes.probe.serviceAccount=kestrel-probe
+     --set isolated.classes.probe.activeDeadlineSeconds=900 --set isolated.classes.probe.nodeSelector.pool=probe)
+iout=$(helm template kestrel . -n kestrel "${K8S_REF[@]}" "${ISO[@]}")
+kubeconform -strict -summary -kubernetes-version "$K8S" -skip TargetGroupBinding - <<<"$iout"
+[ "$(grep -c '^kind: PodTemplate' <<<"$iout")" -eq 2 ]
+grep -q 'KESTREL_ISOLATED_CLASSES: "default,probe"' <<<"$iout"
+grep -q 'KESTREL_ISOLATED_POD_TEMPLATE_PREFIX: "kestrel-isolated-"' <<<"$iout"
+[ "$(grep -c "fieldPath: \"metadata.labels\['batch.kubernetes.io/job-name'\]\"" <<<"$iout")" -eq 2 ]
+[ "$(grep -c '^kind: ServiceAccount' <<<"$iout")" -eq "$(( $(grep -c '^kind: ServiceAccount' <<<"$kout") + 1 ))" ]  # default class only
+grep -q 'serviceAccountName: kestrel-probe' <<<"$iout"
+grep -q 'kestrel.io/active-deadline-seconds: "900"' <<<"$iout"
+grep -q 'pool: probe' <<<"$iout"
+grep -q 'resources: \["podtemplates"\]' <<<"$iout"
+grep -q 'resources: \["secrets"\]' <<<"$iout"
+! grep -q 'verbs: \[.*"get".*\]' <<<"$(grep -A2 '"secrets"' <<<"$iout")"   # create only, never read
+[ "$(grep -c 'name: auth-proxy' <<<"$iout")" -eq 1 ]
+[ "$(grep -c 'readinessProbe' <<<"$iout")" -eq "$(grep -c 'readinessProbe' <<<"$kout")" ]  # none on isolated pods
+! grep -q -E 'KESTREL_ISOLATED|podtemplates' <<<"$kout"
+
 expect_fail() {  # <description> <expected message fragment> <helm --set args...>
   local desc=$1 msg=$2; shift 2
   if err=$(helm template kestrel . -f "$REF" "$@" 2>&1); then
@@ -87,4 +107,6 @@ expect_fail "dynamodb without prefix"     "tablePrefix is required"            -
 expect_fail "github without repos"        "github.repos is required"           --set github.enabled=true --set github.appId=1 --set 'github.roles={r}' --set github.existingSecret=s
 expect_fail "github without roles"        "github.roles is required"           --set github.enabled=true --set github.appId=1 --set 'github.repos={a/b}' --set github.existingSecret=s
 expect_fail "github without secret"       "github.existingSecret is required"  --set github.enabled=true --set github.appId=1 --set 'github.repos={a/b}' --set 'github.roles={r}'
+expect_fail "isolated in quartz mode"    "requires scheduler.mode=kubernetes" --set isolated.enabled=true
+expect_fail "isolated, bad class name"   "DNS label"                          -f ci/ref-values-kubernetes.yaml --set isolated.enabled=true --set isolated.classes.Big_One.resources=null
 echo "chart checks passed"

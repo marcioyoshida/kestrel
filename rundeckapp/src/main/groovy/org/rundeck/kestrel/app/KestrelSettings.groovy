@@ -13,7 +13,10 @@ import java.time.Duration
 class KestrelSettings {
     /** {@code quartz} (upstream) or {@code kubernetes} (CronJobs + SQS + runners). */
     String mode = 'quartz'
-    /** {@code web} (UI/API, reconciler leader candidate) or {@code runner} (fire-queue consumer). */
+    /**
+     * {@code web} (UI/API, reconciler leader candidate), {@code runner} (fire-queue consumer) or
+     * {@code isolated} (one Kubernetes Job: runs one firing or execution, then exits; ADR 0006).
+     */
     String role = 'web'
     String namespace
     String podName
@@ -29,6 +32,10 @@ class KestrelSettings {
     Duration staleClaimAfter = Duration.ofSeconds(180)
     Duration maxLateness = Duration.ofMinutes(15)
     int startingDeadlineSeconds = 600
+    /** Runner classes for isolated jobs (ADR 0006); empty = isolated mode off. */
+    List<String> isolatedClasses = []
+    /** Name prefix of the classes' PodTemplates; the class name follows. */
+    String isolatedPodTemplatePrefix = 'kestrel-isolated-'
 
     /**
      * @param config Grails/Spring configuration; each key also falls back to its environment
@@ -52,6 +59,8 @@ class KestrelSettings {
         }
         s.resyncInterval = Duration.ofSeconds(prop(config, 'kestrel.resync-seconds', '30').toLong())
         s.maxLateness = Duration.ofMinutes(prop(config, 'kestrel.max-lateness-minutes', '15').toLong())
+        s.isolatedClasses = prop(config, 'kestrel.isolated.classes', '').split(',')*.trim().findAll { it } as List<String>
+        s.isolatedPodTemplatePrefix = prop(config, 'kestrel.isolated.pod-template-prefix', 'kestrel-isolated-')
         s
     }
 
@@ -73,6 +82,16 @@ class KestrelSettings {
         role == 'runner'
     }
 
+    /** @return true in a pod running one isolated firing or execution */
+    boolean isIsolated() {
+        role == 'isolated'
+    }
+
+    /** @return true when jobs may choose an isolated runner class */
+    boolean isIsolatedEnabled() {
+        kubernetesMode && !isolatedClasses.isEmpty()
+    }
+
     /**
      * @throws IllegalStateException naming every missing setting, so a misconfigured pod fails at boot
      */
@@ -84,11 +103,11 @@ class KestrelSettings {
             'kestrel.namespace': namespace, 'kestrel.pod-name': podName,
             'kestrel.queue-url': queueUrl, 'kestrel.ledger-table': ledgerTable,
         ].findAll { k, v -> !v }.keySet()
-        if (!runner && !triggerImage) {
+        if (role == 'web' && !triggerImage) {
             missing += ['kestrel.trigger.image']
         }
-        if (!(role in ['web', 'runner'])) {
-            throw new IllegalStateException("kestrel.role must be web or runner, got '${role}'")
+        if (!(role in ['web', 'runner', 'isolated'])) {
+            throw new IllegalStateException("kestrel.role must be web, runner or isolated, got '${role}'")
         }
         if (missing) {
             throw new IllegalStateException("kestrel.scheduler.mode=kubernetes requires ${missing.join(', ')}")

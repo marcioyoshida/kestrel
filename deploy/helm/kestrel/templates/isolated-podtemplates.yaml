@@ -1,0 +1,34 @@
+{{- if and (eq .Values.scheduler.mode "kubernetes") .Values.isolated.enabled }}
+{{- /*
+Runner classes of isolated jobs (ADR 0006). Kestrel reads these PodTemplates when it creates a
+run's Job or an isolated job's CronJob, so a helm upgrade (new image, new resources) reaches the
+next run without touching any job.
+*/}}
+{{- range $name, $c := .Values.isolated.classes }}
+{{- $c = default dict $c }}
+{{- $sa := default (printf "%s-isolated-%s" (include "kestrel.fullname" $) $name) $c.serviceAccount }}
+---
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: {{ include "kestrel.fullname" $ }}-isolated-{{ $name }}
+  labels:
+    {{- include "kestrel.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: isolated
+    kestrel.io/runner-class: {{ $name }}
+  annotations:
+    kestrel.io/active-deadline-seconds: {{ default 86400 $c.activeDeadlineSeconds | quote }}
+template:
+  {{- include "kestrel.rundeck.pod" (dict "root" $ "role" "isolated" "class" (merge (dict "name" $name "serviceAccountName" $sa) $c)) | nindent 2 }}
+{{- if not $c.serviceAccount }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  labels:
+    {{- include "kestrel.labels" $ | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+{{- end }}
+{{- end }}

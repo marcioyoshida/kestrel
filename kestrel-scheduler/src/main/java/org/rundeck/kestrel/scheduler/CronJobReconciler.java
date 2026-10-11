@@ -8,11 +8,14 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Converges the Kestrel-managed CronJobs in a namespace to a desired set of schedule buckets:
- * creates missing ones, replaces ones whose rendered spec changed, and deletes the rest.
+ * Converges the Kestrel-managed CronJobs in a namespace to a desired set: schedule buckets and
+ * isolated-job CronJobs. Creates missing ones, replaces ones whose rendered spec changed, and
+ * deletes the rest.
  * Only objects labelled {@code kestrel.io/managed-by=kestrel} are ever modified. Idempotent;
  * run it from the leader only.
  */
@@ -39,29 +42,48 @@ public class CronJobReconciler {
      * @return what changed
      */
     public Result reconcile(Collection<ScheduleBucket> desired) throws IOException {
+        return reconcile(desired, List.of());
+    }
+
+    /**
+     * @param buckets  buckets that must exist
+     * @param isolated other CronJobs that must exist (isolated jobs, ADR 0006), each with
+     *                 {@link CronJobTemplate#SPEC_HASH} set; every managed CronJob not in either
+     *                 set is deleted, so both sets must be passed together
+     * @return what changed
+     */
+    public Result reconcile(Collection<ScheduleBucket> buckets, Collection<ObjectNode> isolated) throws IOException {
+        Map<String, ObjectNode> want = new LinkedHashMap<>();
+        for (ScheduleBucket bucket : buckets) {
+            want.put(bucket.getName(), template.render(bucket));
+        }
+        for (ObjectNode cj : isolated) {
+            want.put(cj.path("metadata").path("name").asText(), cj);
+        }
         Map<String, JsonNode> actual = new HashMap<>();
         for (JsonNode item : api.list(collection + "?labelSelector=" + CronJobTemplate.MANAGED_LABEL + "%3Dkestrel").path("items")) {
             actual.put(item.path("metadata").path("name").asText(), item);
         }
         Result result = new Result();
-        for (ScheduleBucket bucket : desired) {
-            ObjectNode want = template.render(bucket);
-            JsonNode have = actual.remove(bucket.getName());
+        for (Map.Entry<String, ObjectNode> e : want.entrySet()) {
+            String name = e.getKey();
+            ObjectNode cj = e.getValue();
+            JsonNode have = actual.remove(name);
             if (have == null) {
                 try {
-                    api.create(collection, want);
+                    api.create(collection, cj);
                     result.created++;
-                    LOG.info("CronJob {} created", bucket);
-                } catch (KubeApi.ConflictException e) {
+                    LOG.info("CronJob {} created", describe(cj));
+                } catch (KubeApi.ConflictException ex) {
                     result.conflicts++;  // created concurrently; the next pass compares it
                 }
-            } else if (!hash(want).equals(hash(have))) {
-                ((ObjectNode) want.get("metadata")).put("resourceVersion", have.path("metadata").path("resourceVersion").asText());
+            } else if (!hash(cj).equals(hash(have))) {
+                ((ObjectNode) cj.get("metadata")).put("resourceVersion", have.path("metadata").path("resourceVersion").asText());
                 try {
-                    api.replace(collection + "/" + bucket.getName(), want);
+                    api.replace(collection + "/" + name, cj);
                     result.updated++;
-                    LOG.info("CronJob {} updated", bucket);
-                } catch (KubeApi.ConflictException e) {
+                    LOG.info("CronJob {} updated", describe(cj));
+                } catch (KubeApi.ConflictException ex) {
                     result.conflicts++;
                 }
             } else {
@@ -71,9 +93,16 @@ public class CronJobReconciler {
         for (String orphan : actual.keySet()) {
             api.delete(collection + "/" + orphan);
             result.deleted++;
-            LOG.info("CronJob {} deleted (no job uses its schedule)", orphan);
+            LOG.info("CronJob {} deleted (no job uses it)", orphan);
         }
         return result;
+    }
+
+    private static String describe(JsonNode cj) {
+        JsonNode labels = cj.path("metadata").path("labels");
+        String job = labels.path(IsolatedRunTemplate.JOB_LABEL).asText("");
+        return cj.path("metadata").path("name").asText() + "[" + cj.path("spec").path("schedule").asText() + " "
+            + cj.path("spec").path("timeZone").asText() + (job.isEmpty() ? "" : " isolated job " + job) + "]";
     }
 
     private static String hash(JsonNode cronJob) {

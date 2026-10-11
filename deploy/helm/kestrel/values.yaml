@@ -62,6 +62,23 @@ runner:
     requests: { cpu: "1", memory: 3Gi }
     limits: { memory: 3Gi }
 
+# Isolated jobs (ADR 0006, scheduler.mode=kubernetes): a job opts in with the "Run in its own
+# Kubernetes pod" execution plugin and picks a runner class; each of its runs is a Kubernetes Job
+# built from that class (same image as web/runner, run in one-shot mode). Use classes for jobs
+# that need their own IAM role, node class, or resources.
+isolated:
+  enabled: false
+  classes:
+    default: {}
+  # Each class (a DNS label) accepts:
+  #   serviceAccount: ""        existing service account (e.g. with its own Pod Identity role);
+  #                             default: the chart creates <fullname>-isolated-<class>
+  #   resources: {}             default: runner.resources
+  #   nodeSelector: {}          default: web.nodeSelector
+  #   tolerations: []
+  #   activeDeadlineSeconds: 86400   the Job (pod start + run) is stopped after this
+  #   extraEnv: []
+
 serviceAccount:
   create: true
   name: ""

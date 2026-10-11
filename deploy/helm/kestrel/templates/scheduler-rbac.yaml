@@ -1,6 +1,6 @@
 {{- if eq .Values.scheduler.mode "kubernetes" }}
-# Web pods elect a leader on a Lease; the leader converges the trigger CronJobs. Runner and
-# trigger pods need no Kubernetes API access at all.
+# Web pods elect a leader on a Lease; the leader converges the CronJobs. Runner, trigger and
+# isolated pods need no Kubernetes API access at all.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -18,6 +18,19 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
+  {{- if .Values.isolated.enabled }}
+  # Isolated jobs (ADR 0006): a Job per run-now, from the class's PodTemplate; a Secret (owned by
+  # the Job) for run-time secure option values. No read access to Secrets.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["podtemplates"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

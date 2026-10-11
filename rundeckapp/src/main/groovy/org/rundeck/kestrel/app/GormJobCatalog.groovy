@@ -1,6 +1,7 @@
 package org.rundeck.kestrel.app
 
 import groovy.util.logging.Slf4j
+import org.rundeck.kestrel.app.isolated.KestrelIsolated
 import org.rundeck.kestrel.scheduler.FiringCoordinator
 import org.rundeck.kestrel.scheduler.ScheduleBucket
 import org.rundeck.kestrel.scheduler.UnsupportedScheduleException
@@ -23,6 +24,7 @@ class GormJobCatalog implements FiringCoordinator.JobCatalog {
     ScheduledExecutionService scheduledExecutionService
     ExecutionService executionService
     FrameworkService frameworkService
+    KestrelSettings kestrelSettings
 
     /** @return time zone for jobs without one: the server's, as Quartz used */
     static ZoneId defaultZone() {
@@ -41,23 +43,39 @@ class GormJobCatalog implements FiringCoordinator.JobCatalog {
     }
 
     /**
-     * Buckets every enabled, scheduled job needs, and the jobs whose schedules cannot run.
+     * @return the job's runner class if it runs isolated (ADR 0006) here, else null (pool)
+     */
+    String isolatedClass(ScheduledExecution se) {
+        kestrelSettings?.isolatedEnabled ? KestrelIsolated.runnerClass(se) : null
+    }
+
+    /**
+     * Buckets every enabled, scheduled pool job needs, the isolated jobs that need their own
+     * CronJob, and the jobs whose schedules cannot run.
      *
-     * @return [buckets: Set<ScheduleBucket>, unsupported: Map<String,String> (job -> reason)]
+     * @return [buckets: Set<ScheduleBucket>, isolated: List<Map> ([uuid, runnerClass, bucket]),
+     *          unsupported: Map<String,String> (job -> reason)]
      */
     Map desiredBuckets() {
         Set<ScheduleBucket> buckets = [] as Set
+        List<Map> isolated = []
         Map<String, String> unsupported = [:]
         ScheduledExecution.withNewSession {
             ScheduledExecution.findAllByScheduledAndScheduleEnabledAndExecutionEnabled(true, true, true).each { se ->
                 try {
-                    buckets << ScheduleBucket.of(se.generateCrontabExression(), se.timeZone, defaultZone())
+                    def bucket = ScheduleBucket.of(se.generateCrontabExression(), se.timeZone, defaultZone())
+                    String cls = isolatedClass(se)
+                    if (cls) {
+                        isolated << [uuid: se.uuid, runnerClass: cls, bucket: bucket]
+                    } else {
+                        buckets << bucket
+                    }
                 } catch (UnsupportedScheduleException e) {
                     unsupported[se.extid] = e.reason
                 }
             }
         }
-        [buckets: buckets, unsupported: unsupported]
+        [buckets: buckets, isolated: isolated, unsupported: unsupported]
     }
 
     @Override
@@ -67,23 +85,43 @@ class GormJobCatalog implements FiringCoordinator.JobCatalog {
         ScheduledExecution.withNewSession {
             boolean active = executionService.executionsAreActive
             ScheduledExecution.findAllByScheduled(true).each { se ->
-                if (bucketOf(se)?.name != bucket) {
-                    return
+                if (bucketOf(se)?.name != bucket || isolatedClass(se)) {
+                    return  // isolated jobs fire from their own CronJob
                 }
-                String reason = null
-                if (!active) {
-                    reason = 'executions are disabled (passive mode)'
-                } else if (!se.hasScheduleEnabled()) {
-                    reason = 'schedule disabled'
-                } else if (!se.hasExecutionEnabled()) {
-                    reason = 'execution disabled'
-                } else {
-                    reason = projectGate.computeIfAbsent(se.project) { String p -> projectReason(p) }
-                }
-                out << new FiringCoordinator.ScheduledJob(se.uuid, "${se.project}/${se.generateFullName()}", reason)
+                out << gated(se, active, projectGate)
             }
         }
         out
+    }
+
+    /**
+     * @param uuid job
+     * @return the job as a firing sees it (an isolated pod's own job), or null if it is gone
+     */
+    FiringCoordinator.ScheduledJob scheduledJob(String uuid) {
+        FiringCoordinator.ScheduledJob out = null
+        ScheduledExecution.withNewSession {
+            def se = ScheduledExecution.findByUuid(uuid)
+            if (se) {
+                out = se.scheduled ? gated(se, executionService.executionsAreActive, [:]) :
+                    new FiringCoordinator.ScheduledJob(se.uuid, "${se.project}/${se.generateFullName()}", 'not scheduled')
+            }
+        }
+        out
+    }
+
+    private FiringCoordinator.ScheduledJob gated(ScheduledExecution se, boolean active, Map<String, String> projectGate) {
+        String reason = null
+        if (!active) {
+            reason = 'executions are disabled (passive mode)'
+        } else if (!se.hasScheduleEnabled()) {
+            reason = 'schedule disabled'
+        } else if (!se.hasExecutionEnabled()) {
+            reason = 'execution disabled'
+        } else {
+            reason = projectGate.computeIfAbsent(se.project) { String p -> projectReason(p) }
+        }
+        new FiringCoordinator.ScheduledJob(se.uuid, "${se.project}/${se.generateFullName()}", reason)
     }
 
     private String projectReason(String project) {

@@ -74,6 +74,19 @@ misbehaves (double-firing schedules, logs that never reach S3, random login redi
 {{- fail "runner.replicas must be at least 1 in kubernetes mode: runners execute every scheduled job" -}}
 {{- end -}}
 {{- end -}}
+{{- if .Values.isolated.enabled -}}
+{{- if ne .Values.scheduler.mode "kubernetes" -}}
+{{- fail "isolated.enabled requires scheduler.mode=kubernetes" -}}
+{{- end -}}
+{{- if not .Values.isolated.classes -}}
+{{- fail "isolated.classes needs at least one runner class" -}}
+{{- end -}}
+{{- range $name, $c := .Values.isolated.classes -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,18}[a-z0-9])?$" $name) -}}
+{{- fail (printf "isolated.classes: %q must be a DNS label of at most 20 characters" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.logStorage.s3.enabled (not (has .Values.logStorage.s3.provider (list "kestrel-s3" "org.rundeck.amazon-s3"))) -}}
 {{- fail "logStorage.s3.provider must be kestrel-s3 or org.rundeck.amazon-s3" -}}
 {{- end -}}
@@ -141,23 +154,34 @@ app.kubernetes.io/component: runner
 {{- end -}}
 
 {{/*
-Pod template shared by the web and runner StatefulSets. Call with (dict "root" $ "role" "web|runner").
-In kubernetes mode each pod derives a stable server UUID from its StatefulSet name, so a restarted
-pod marks its own interrupted executions incomplete (upstream BootStrap) and never another pod's.
+Pod template shared by the web and runner StatefulSets and the isolated runner classes' PodTemplates.
+Call with (dict "root" $ "role" "web|runner") or (dict "root" $ "role" "isolated" "class" <class>).
+In kubernetes mode each pod derives a stable server UUID from its StatefulSet name (isolated pods:
+their Job name), so a restarted pod marks its own interrupted executions incomplete (upstream
+BootStrap) and never another pod's.
 */}}
 {{- define "kestrel.rundeck.pod" -}}
 {{- $ := .root -}}
 {{- $role := .role -}}
+{{- $cls := default dict .class -}}
+{{- $isolated := eq $role "isolated" -}}
 {{- $k8s := eq $.Values.scheduler.mode "kubernetes" -}}
 {{- $auth := and (eq $role "web") $.Values.auth.enabled -}}
-{{- $loopback := or (eq $role "runner") $auth -}}
-{{- $res := ternary $.Values.web.resources $.Values.runner.resources (eq $role "web") -}}
+{{- $loopback := or (ne $role "web") $auth -}}
+{{- $res := ternary $.Values.web.resources (default $.Values.runner.resources $cls.resources) (eq $role "web") -}}
+{{- $nodeSelector := ternary (default $.Values.web.nodeSelector $cls.nodeSelector) $.Values.web.nodeSelector $isolated -}}
+{{- $tolerations := ternary (default $.Values.web.tolerations $cls.tolerations) $.Values.web.tolerations $isolated -}}
 metadata:
   labels:
     {{- if eq $role "web" }}
     {{- include "kestrel.web.selectorLabels" $ | nindent 4 }}
-    {{- else }}
+    {{- else if eq $role "runner" }}
     {{- include "kestrel.runner.selectorLabels" $ | nindent 4 }}
+    {{- else }}
+    app.kubernetes.io/name: {{ include "kestrel.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: isolated
+    kestrel.io/runner-class: {{ $cls.name }}
     {{- end }}
   annotations:
     checksum/env: {{ include (print $.Template.BasePath "/web-configmap.yaml") $ | sha256sum }}
@@ -165,7 +189,14 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  {{- if $isolated }}
+  serviceAccountName: {{ $cls.serviceAccountName }}
+  # Isolated pods never call the Kubernetes API; Pod Identity uses its own projected token.
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  {{- else }}
   serviceAccountName: {{ ternary (include "kestrel.serviceAccountName" $) (include "kestrel.runnerServiceAccountName" $) (eq $role "web") }}
+  {{- end }}
   {{- with $.Values.imagePullSecrets }}
   imagePullSecrets:
     {{- toYaml . | nindent 4 }}
@@ -228,7 +259,12 @@ spec:
         - name: KESTREL_NAMESPACE
           valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
         - name: KESTREL_POD_NAME
+          {{- if $isolated }}
+          # The Job name: every pod (and retry) of one run has the same server UUID.
+          valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } }
+          {{- else }}
           valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          {{- end }}
         {{- end }}
         {{- if eq $.Values.storage.mode "rdbms" }}
         {{- with $.Values.database.existingSecret }}
@@ -261,15 +297,20 @@ spec:
         {{- with $.Values.web.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- with $cls.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       # Grails boot + migrations can take minutes; liveness only starts after startup passes.
       startupProbe:
         {{- include "kestrel.rundeck.probe" (list $loopback "/monitoring/health/readiness") | nindent 8 }}
         periodSeconds: 10
         failureThreshold: 60
+      {{- if not $isolated }}
       readinessProbe:
         {{- include "kestrel.rundeck.probe" (list $loopback "/monitoring/health/readiness") | nindent 8 }}
         periodSeconds: 10
         failureThreshold: 3
+      {{- end }}
       livenessProbe:
         {{- include "kestrel.rundeck.probe" (list $loopback "/monitoring/health") | nindent 8 }}
         periodSeconds: 20
@@ -295,14 +336,15 @@ spec:
     - name: libext
       emptyDir: {}
     {{- end }}
-  {{- with $.Values.web.nodeSelector }}
+  {{- with $nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with $.Values.web.tolerations }}
+  {{- with $tolerations }}
   tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  {{- if not $isolated }}
   {{- with $.Values.web.affinity }}
   affinity:
     {{- toYaml . | nindent 4 }}
@@ -310,6 +352,7 @@ spec:
   {{- with $.Values.web.topologySpreadConstraints }}
   topologySpreadConstraints:
     {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
 {{- end -}}
 

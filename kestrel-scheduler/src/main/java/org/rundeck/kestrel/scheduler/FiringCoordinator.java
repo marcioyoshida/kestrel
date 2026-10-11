@@ -129,7 +129,7 @@ public class FiringCoordinator implements SqsFireConsumer.Handler {
             }
             String key = fire.fireKey(job.uuid);
             try {
-                allSettled &= fireJob(fire, job, key, late);
+                allSettled &= fireJob(fire, job, key, late, false);
             } catch (Exception e) {
                 LOG.error("{} {}: {}", fire, job.name, e.toString(), e);
                 allSettled = false;
@@ -138,14 +138,35 @@ public class FiringCoordinator implements SqsFireConsumer.Handler {
         return allSettled;
     }
 
-    private boolean fireJob(FireMessage fire, ScheduledJob job, String key, boolean late) throws Exception {
+    /**
+     * Fires one job, as an isolated pod does for its own CronJob firing (ADR 0006). A claim this
+     * server already holds is treated as stale at once: the pod is a retry of the same Kubernetes
+     * Job (same name, same server UUID), so the claimant has stopped.
+     *
+     * @param fire the firing
+     * @param job  the job, gated as {@link JobCatalog#jobsInBucket} gates it
+     * @return true if the firing is settled (started, skipped, or someone else's)
+     */
+    public boolean fireOne(FireMessage fire, ScheduledJob job) throws Exception {
+        if (job.notRunnableReason != null) {
+            LOG.info("{} {}: not run ({})", fire, job.name, job.notRunnableReason);
+            return true;
+        }
+        boolean late = Duration.between(fire.getScheduledAt(), clock.instant()).compareTo(maxLateness) > 0;
+        return fireJob(fire, job, fire.fireKey(job.uuid), late, true);
+    }
+
+    private boolean fireJob(FireMessage fire, ScheduledJob job, String key, boolean late, boolean ownClaimIsStale)
+        throws Exception
+    {
         Instant now = clock.instant();
         FireLedger.Claim claim = ledger.claim(key, serverUuid, now);
         if (!claim.won) {
             if (claim.state != FireLedger.State.CLAIMED) {
                 return true;  // already started or skipped by someone
             }
-            if (Duration.between(claim.claimedAt, now).compareTo(staleAfter) < 0) {
+            boolean mine = ownClaimIsStale && serverUuid.equals(claim.owner);
+            if (!mine && Duration.between(claim.claimedAt, now).compareTo(staleAfter) < 0) {
                 return false;  // another hand-off is in progress; look again on redelivery
             }
             boolean ran = catalog.scheduledExecutionExists(job.uuid, claim.owner, claim.claimedAt.minusSeconds(5));

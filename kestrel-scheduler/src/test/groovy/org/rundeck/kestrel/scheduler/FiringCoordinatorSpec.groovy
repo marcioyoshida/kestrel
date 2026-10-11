@@ -104,6 +104,59 @@ class FiringCoordinatorSpec extends Specification {
         FireMessage.parse(fire.toJson()).fireKey('j') == fire.fireKey('j')
     }
 
+    def "an isolated pod fires its one job; its retry takes over its own claim at once"() {
+        given:
+        def job = new FiringCoordinator.ScheduledJob('job-1', 'nightly', null)
+        ledger.claim(fire.fireKey('job-1'), 'pod-a', clock.now.minusSeconds(5))
+
+        expect: "the retry pod (same Job, same server UUID) does not wait for the claim to go stale"
+        runner('pod-a').fireOne(fire, job)
+        launched.size() == 1
+
+        and: "another server's fresh claim is still respected"
+        ledger.claim(new FireMessage('kestrel-abc', '', 'UTC', fire.scheduledAt.plusSeconds(60)).fireKey('job-1'), 'r9', clock.now)
+        !runner('pod-a').fireOne(new FireMessage('kestrel-abc', '', 'UTC', fire.scheduledAt.plusSeconds(60)), job)
+        launched.size() == 1
+    }
+
+    def "an isolated retry whose earlier attempt created the execution settles instead of rerunning"() {
+        given:
+        ledger.claim(fire.fireKey('job-1'), 'pod-a', clock.now.minusSeconds(5))
+        executionsByDeadRunner << 'pod-a'
+
+        expect:
+        runner('pod-a').fireOne(fire, new FiringCoordinator.ScheduledJob('job-1', 'nightly', null))
+        launched.isEmpty()
+        ledger.items[fire.fireKey('job-1')].state == FireLedger.State.STARTED
+    }
+
+    def "fireOne honours the gate and lateness"() {
+        expect:
+        runner('pod-a').fireOne(fire, new FiringCoordinator.ScheduledJob('job-1', 'nightly', 'schedule disabled'))
+        launched.isEmpty()
+        ledger.items.isEmpty()
+
+        when:
+        clock.now = clock.now.plusSeconds(20 * 60)
+
+        then:
+        runner('pod-a').fireOne(fire, new FiringCoordinator.ScheduledJob('job-1', 'nightly', null))
+        launched.isEmpty()
+        ledger.items[fire.fireKey('job-1')].state == FireLedger.State.SKIPPED
+    }
+
+    def "the firing of a CronJob-created Job comes from its name"() {
+        expect:
+        FireMessage.fromJobName('kestrel-i-abc', 'kestrel-i-abc-29458800', '0 12 * * *', 'UTC').scheduledAt ==
+            Instant.ofEpochSecond(29458800L * 60)
+
+        when:
+        FireMessage.fromJobName('kestrel-i-abc', 'kestrel-i-abc-manual', '', 'UTC')
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     /** FireLedger with DynamoDB's conditional semantics. */
     static class MemoryLedger implements FireLedger {
         Map<String, FireLedger.Claim> items = [:]

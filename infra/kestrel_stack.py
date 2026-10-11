@@ -36,6 +36,10 @@ RUNNER_SERVICE_ACCOUNT = "kestrel-runner"
 # `<prefix>--ids`). Not CloudFormation resources: teardown.sh deletes them.
 DATA_TABLE_PREFIX = "kestrel-ref"
 TRIGGER_SERVICE_ACCOUNT = "kestrel-trigger"
+# ADR 0006: isolated runner classes of the reference environment (the chart creates
+# kestrel-isolated-<class>). "probe" has its own role, so a validation job can show which IAM
+# role its pod ran with.
+ISOLATED_CLASSES = ("default", "probe")
 PROXY_PORT = 4180  # oauth2-proxy sidecar; Rundeck itself listens on 127.0.0.1:4440 only
 # CloudFront VPC origins are unsupported in use1-az3, which is us-east-1e in this account.
 AZS = ["us-east-1a", "us-east-1b"]
@@ -209,6 +213,24 @@ class KestrelStack(Stack):
         ledger.grant(web_role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem",
                      "dynamodb:DeleteItem")
         runner_role.add_to_policy(data_tables)
+
+        # Isolated pods (ADR 0006) run the full app for one run: data tables, fire ledger (claims,
+        # cluster bus), logs. No SQS: they are started by Kubernetes, not by the fire queue.
+        for cls in ISOLATED_CLASSES:
+            role = iam.Role(self, f"Isolated{cls.capitalize()}PodRole",
+                            assumed_by=iam.ServicePrincipal("pods.eks.amazonaws.com"))
+            role.assume_role_policy.add_statements(iam.PolicyStatement(
+                actions=["sts:TagSession"], principals=[iam.ServicePrincipal("pods.eks.amazonaws.com")]))
+            role.add_to_policy(data_tables)
+            ledger.grant(role, "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem")
+            log_bucket.grant_read_write(role)
+            log_bucket.grant_delete(role)
+            eks.CfnPodIdentityAssociation(
+                self, f"Isolated{cls.capitalize()}PodIdentity",
+                cluster_name=cluster.ref, namespace=NAMESPACE, service_account=f"kestrel-isolated-{cls}",
+                role_arn=role.role_arn,
+            )
+            CfnOutput(self, f"Isolated{cls.capitalize()}RoleName", value=role.role_name)
 
         # ---------------------------------------------------------------- database (rdbms storage only)
         # M2d: storage.mode=dynamodb (the default) needs no RDBMS. rdbms=True keeps upstream's mode.

@@ -48,6 +48,34 @@ public final class FireMessage {
             n.path("timeZone").asText(""), Instant.parse(n.get("scheduledAt").asText()));
     }
 
+    /**
+     * The firing a CronJob-created Job stands for. The CronJob controller names each Job
+     * {@code <cronjob>-<minutes since epoch>}, so a late or retried pod names the same firing.
+     *
+     * @param cronJob  CronJob name
+     * @param jobName  Job name
+     * @param schedule schedule of the CronJob
+     * @param timeZone time zone of the CronJob
+     * @return the firing
+     * @throws IllegalArgumentException if the Job was not created by that CronJob (e.g. by hand)
+     */
+    public static FireMessage fromJobName(String cronJob, String jobName, String schedule, String timeZone) {
+        String prefix = cronJob + "-";
+        long minute = -1;
+        if (jobName != null && jobName.startsWith(prefix)) {
+            try {
+                minute = Long.parseLong(jobName.substring(prefix.length()));
+            } catch (NumberFormatException e) {
+                minute = -1;
+            }
+        }
+        if (minute <= 0) {
+            throw new IllegalArgumentException("Job '" + jobName + "' was not created by CronJob '" + cronJob
+                + "' (no scheduled-minute suffix)");
+        }
+        return new FireMessage(cronJob, schedule, timeZone, Instant.ofEpochSecond(minute * 60));
+    }
+
     /** @return JSON body, as the trigger writes it */
     public String toJson() {
         ObjectNode n = JSON.createObjectNode();

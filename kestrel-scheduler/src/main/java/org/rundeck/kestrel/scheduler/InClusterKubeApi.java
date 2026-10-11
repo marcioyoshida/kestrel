@@ -54,7 +54,10 @@ public class InClusterKubeApi implements KubeApi {
             throw new IOException("not running in Kubernetes (KUBERNETES_SERVICE_HOST unset)");
         }
         String h = host.contains(":") ? "[" + host + "]" : host;
-        return new InClusterKubeApi(URI.create("https://" + h + ":" + port), SA.resolve("ca.crt"), SA.resolve("token"));
+        // KESTREL_KUBE_SA_DIR: the local test harness's fake API server (scripts/kestrel/fake_kube.py)
+        String dir = System.getenv("KESTREL_KUBE_SA_DIR");
+        Path sa = dir == null || dir.isBlank() ? SA : Path.of(dir);
+        return new InClusterKubeApi(URI.create("https://" + h + ":" + port), sa.resolve("ca.crt"), sa.resolve("token"));
     }
 
     private static SSLContext sslContext(Path caFile) throws IOException {

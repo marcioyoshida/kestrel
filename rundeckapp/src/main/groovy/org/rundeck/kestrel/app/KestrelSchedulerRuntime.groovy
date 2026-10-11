@@ -8,6 +8,7 @@ import org.quartz.impl.matchers.GroupMatcher
 import org.quartz.impl.matchers.NameMatcher
 import org.rundeck.app.acl.ACLCacheControl
 import org.rundeck.app.acl.AppACLContext
+import org.rundeck.kestrel.app.isolated.KestrelIsolated
 import org.rundeck.kestrel.scheduler.AwsClients
 import org.rundeck.kestrel.scheduler.ClusterBus
 import org.rundeck.kestrel.scheduler.CronJobReconciler
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * <ul>
  *   <li>web pods: Lease election; the leader reconciles CronJobs every resync interval and on demand</li>
  *   <li>runner pods: the SQS fire-queue consumer</li>
+ *   <li>isolated pods: the one firing or execution of their Kubernetes Job (ADR 0006), then exit</li>
  *   <li>web leader: the orphan sweeper (executions left running by pods that no longer exist)</li>
  *   <li>every pod: the {@code cluster.abortExecution} listener and abort poller, the ACL cache bus
  *       ({@code cluster.clearAclCache} published and applied across pods), and a check that Quartz
@@ -59,6 +61,8 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
     Scheduler quartzScheduler
     ACLCacheControl authorizationService
     def executionService
+    KestrelIsolated kestrelIsolated
+    Runnable kestrelIsolatedRunner
 
     private final AtomicBoolean started = new AtomicBoolean()
     private final AtomicBoolean reconcileRequested = new AtomicBoolean()
@@ -88,7 +92,12 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
         String serverUuid = frameworkService.serverUUID
         log.info("Kestrel scheduler: role=${kestrelSettings.role} pod=${kestrelSettings.podName} server=${serverUuid}")
 
-        if (kestrelSettings.runner) {
+        if (kestrelSettings.isolated) {
+            quartzScheduler.listenerManager.addJobListener(kestrelHandoffRegistry, NameMatcher.jobNameStartsWith('kestrel:'))
+            def t = new Thread(kestrelIsolatedRunner, 'kestrel-isolated')
+            t.daemon = true
+            t.start()
+        } else if (kestrelSettings.runner) {
             quartzScheduler.listenerManager.addJobListener(kestrelHandoffRegistry, NameMatcher.jobNameStartsWith('kestrel:'))
             kestrelLauncher.handoffTimeout = kestrelSettings.handoffTimeout
             def coordinator = new FiringCoordinator(kestrelJobCatalog,
@@ -160,10 +169,11 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             if (leader && (due || reconcileRequested.getAndSet(false))) {
                 lastResync = now
                 Map desired = kestrelJobCatalog.desiredBuckets()
-                def result = reconciler.reconcile(desired.buckets as Collection)
                 Map unsupported = desired.unsupported as Map
+                List isolated = desired.isolated ? kestrelIsolated.cronJobs(desired.isolated as List, unsupported) : []
+                def result = reconciler.reconcile(desired.buckets as Collection, isolated)
                 if (result.changed() || unsupported) {
-                    log.info("Kestrel reconcile: ${result}; buckets=${desired.buckets.size()}" +
+                    log.info("Kestrel reconcile: ${result}; buckets=${desired.buckets.size()} isolated=${isolated.size()}" +
                         (unsupported ? "; ${unsupported.size()} job(s) have schedules Kubernetes cannot run: ${unsupported}" : ''))
                 }
             }
@@ -209,6 +219,9 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
         def pods = kubeApi.list("/api/v1/namespaces/${ns}/pods?labelSelector=" +
             URLEncoder.encode('app.kubernetes.io/component in (web,runner)', 'UTF-8'))
         Set<String> live = pods.path('items').collect { ServerIdentity.uuidFor(ns, it.path('metadata').path('name').asText()) } as Set
+        if (kestrelSettings.isolatedEnabled) {
+            live.addAll(kestrelIsolated.liveJobServers())  // isolated pods take their UUID from their Job
+        }
         List<String> owners = []
         Execution.withNewSession {
             owners = Execution.createCriteria().list {
@@ -226,6 +239,14 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
                 // the status upstream gives its own leftovers at boot (executionService.startup.cleanupStatus);
                 // with none, cleanup marks the execution cancelled, which reads as a user abort
                 executionService.cleanupRunningJobs(uuid, 'incomplete', new Date())
+                // and runs queued for an isolated Job that ended without starting them
+                Execution.withNewSession {
+                    def queued = Execution.findAllByStatusAndServerNodeUUIDAndDateCompletedIsNull(
+                        ExecutionService.EXECUTION_QUEUED, uuid)
+                    if (queued) {
+                        executionService.cleanupRunningJobs(queued, 'incomplete')
+                    }
+                }
                 orphanSightings.remove(uuid)
             }
         }
