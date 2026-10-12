@@ -185,6 +185,10 @@ metadata:
     {{- end }}
   annotations:
     checksum/env: {{ include (print $.Template.BasePath "/web-configmap.yaml") $ | sha256sum }}
+    {{- if $isolated }}
+    # A run is not restartable: node consolidation (EKS Auto Mode / Karpenter) must wait for it.
+    karpenter.sh/do-not-disrupt: "true"
+    {{- end }}
     {{- with $.Values.web.podAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -13,17 +13,31 @@ unknown runner class is rejected; switching a job back to the pool deletes its C
 """
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid as uuidlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fake_kube  # noqa: E402
 import local_validate_m2c as m2c  # noqa: E402
-from local_validate_m2c import API, call, check, RESULTS  # noqa: E402
+from local_validate_m2c import API, check, RESULTS  # noqa: E402
+
+
+def call(*args, **kw):
+    """m2c.call that rides out client-side network errors (WSL to CloudFront resets)."""
+    for i in range(5):
+        try:
+            return m2c.call(*args, **kw)
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            if i == 4:
+                raise
+            print(f"      (network error, retrying: {e})", flush=True)
+            time.sleep(3)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BASE = "/tmp/kestrel-local/iso"
@@ -203,6 +217,9 @@ class FakeCluster:
     def kill_pod(self, name):
         return self.kube.kill_pod(name)
 
+    def remember(self, name):
+        pass
+
     def delete_job(self, name):
         self.kube.handle("DELETE", f"/apis/batch/v1/namespaces/kestrel/jobs/{name}", None)
 
@@ -258,6 +275,16 @@ class EksCluster:
         for p in pods:
             st = next((c for c in p.get("status", {}).get("containerStatuses", []) if c["name"] == "rundeck"), {})
             out.append(st.get("state", {}).get("terminated", {}).get("exitCode"))
+        if out:
+            return out
+        # Auto Mode removed the idle node and its finished pods with it; the Job keeps the outcome.
+        st = self._get("job", name).get("status", {})
+        for c in st.get("conditions", []):
+            if c.get("status") == "True" and c.get("type") == "Complete":
+                return [0] * st.get("succeeded", 1)
+            if c.get("status") == "True" and c.get("type") == "Failed":
+                m = re.search(r"exit code (\d+)", c.get("message", ""))
+                return [None] * (st.get("failed", 1) - 1) + [int(m.group(1)) if m else None]
         return out
 
     def pod_attempts(self, name):
@@ -288,12 +315,22 @@ class EksCluster:
     def delete_job(self, name):
         self.k("delete", "job", name, "--wait=false", check=False)
 
+    seen = None
+
+    def remember(self, name):
+        """Keeps a finished Job's pod logs: Auto Mode may remove an idle node, and its logs with it."""
+        self.seen = self.seen if self.seen is not None else {}
+        for p in self._get("pods", "-l", f"batch.kubernetes.io/job-name={name}").get("items", []):
+            pod = p["metadata"]["name"]
+            text = self.k("logs", pod, "-c", "rundeck", check=False)
+            self.seen[pod] = (bool(text), [f"{pod}: {ln.strip()[:160]}" for ln in text.splitlines() if " ERROR " in ln])
+
     def pod_errors(self):
-        errors = []
-        for p in self._get("pods", "-l", "app.kubernetes.io/component=isolated").get("items", []):
-            text = self.k("logs", p["metadata"]["name"], "-c", "rundeck", check=False)
-            errors += [f"{p['metadata']['name']}: {ln.strip()[:160]}" for ln in text.splitlines() if " ERROR " in ln]
-        return errors
+        seen = self.seen or {}
+        missing = [p for p, (ok, _) in seen.items() if not ok]
+        print(f"      isolated pod logs read: {len(seen) - len(missing)} of {len(seen)}"
+              + (f" (node already removed: {', '.join(missing)})" if missing else ""))
+        return [e for _, errs in seen.values() for e in errs]
 
     def web_errors(self, since):
         return m2c.server_errors(since)
@@ -394,12 +431,27 @@ def run_checks(cl):
         s, body = call(api, f"/api/{API}/execution/{eid}", headers=T)
         return json.loads(body) if s == 200 else {}
 
-    def output(eid):
-        s, body = call(api, f"/api/{API}/execution/{eid}/output?format=text", headers=T, accept="text/plain")
-        return body if s == 200 else ""
+    def output(eid, tries=10):
+        # A finished run's log is fetched from the log store on first read (an empty answer, as
+        # for any execution another pod ran); read again until it has arrived.
+        for i in range(tries):
+            s, body = call(api, f"/api/{API}/execution/{eid}/output?format=text", headers=T, accept="text/plain")
+            if s == 200 and body.strip():
+                return body
+            if i + 1 < tries:
+                time.sleep(2)
+        return ""
 
     def done(eid, limit=600):
-        return m2c.wait_done(api, T, eid, limit=limit)
+        """Final status; rides out transient HTTP errors (a web pod moving to another node)."""
+        status, end = None, time.time() + limit
+        while time.time() < end:
+            s, body = call(api, f"/api/{API}/execution/{eid}", headers=T)
+            status = json.loads(body).get("status") if s == 200 else f"HTTP {s}"
+            if s == 200 and status not in ("running", "scheduled", "queued"):
+                return status
+            time.sleep(2)
+        return status
 
     # ---- run-now: queued, a Job, run in that pod
     t0 = time.time()
@@ -437,6 +489,7 @@ def run_checks(cl):
     check("run-now: the pod's environment is the isolated role", f"pod={jname}" in out and "role=isolated" in out,
           out.strip()[:200])
     wait_for(lambda: cl.job_result(jname), 120)
+    cl.remember(jname)
     check("run-now: the pod exited 0 and the Job is Complete",
           cl.pod_exits(jname) == [0] and cl.job_result(jname) == "Complete", f"{cl.pod_exits(jname)} {cl.job_result(jname)}")
     queued_s = (after.get("date-started", {}).get("unixtime", 0) - first.get("date-started", {}).get("unixtime", 0)) / 1000
@@ -467,11 +520,14 @@ def run_checks(cl):
           status == "succeeded" and f"pw-sha={want}" in output(e_secure) and bool(secret)
           and secret["metadata"]["ownerReferences"][0]["uid"] == sjob["metadata"]["uid"], status)
     check("secure option: the value is not in the Job spec", ("s3cret-" + tag) not in json.dumps(sjob))
+    wait_for(lambda: cl.job_result(sjob["metadata"]["name"]), 120)
+    cl.remember(sjob["metadata"]["name"])
 
     # ---- failure: the Job fails without a retry
     status = done(e_fails)
     fname = cl.job_for(e_fails)["metadata"]["name"]
     wait_for(lambda: cl.job_result(fname), 120)
+    cl.remember(fname)
     check("failure: execution failed, pod exit 3, Job Failed without a retry",
           status == "failed" and cl.pod_exits(fname) == [3] and cl.job_result(fname) == "Failed",
           f"{status} {cl.pod_exits(fname)} {cl.job_result(fname)}")
@@ -482,6 +538,7 @@ def run_checks(cl):
     retried = execution(e_retry).get("retriedExecution") or {}
     second = done(retried.get("id"), 180) if retried.get("id") else None
     wait_for(lambda: cl.job_result(rname), 180)
+    cl.remember(rname)
     check("retry: the retry runs in the same pod; the pod exits 3 only after it",
           status == "failed-with-retry" and second == "failed"
           and execution(retried["id"]).get("serverUUID") == sid(rname) and cl.pod_exits(rname) == [3],
@@ -490,18 +547,20 @@ def run_checks(cl):
     # ---- aborted while queued: its pod starts, finds it ended, never runs it
     qname = cl.job_for(e_queued_abort)["metadata"]["name"]
     wait_for(lambda: cl.job_result(qname), 400)
+    cl.remember(qname)
     check("abort while queued: the pod ends it aborted without running it",
-          "sleepy-started" not in output(e_queued_abort) and execution(e_queued_abort).get("status") == "aborted"
+          "sleepy-started" not in output(e_queued_abort, 3) and execution(e_queued_abort).get("status") == "aborted"
           and cl.pod_exits(qname) == [3], f"{execution(e_queued_abort).get('status')} exits={cl.pod_exits(qname)}")
 
     # ---- abort while running (cross-pod abort)
     e_sleepy = run("sleepy")
-    wait_for(lambda: "sleepy-started" in output(e_sleepy), 600)
+    wait_for(lambda: "sleepy-started" in output(e_sleepy, 1), 600)
     t1 = time.time()
     call(api, f"/api/{API}/execution/{e_sleepy}/abort", "POST", headers=T)
     status = done(e_sleepy, 60)
     aname = cl.job_for(e_sleepy)["metadata"]["name"]
     wait_for(lambda: cl.job_result(aname), 120)
+    cl.remember(aname)
     check("abort while running: the isolated pod stops the run", status == "aborted"
           and "sleepy-done" not in output(e_sleepy) and execution(e_sleepy).get("status") == "aborted"
           and cl.pod_exits(aname) == [3], f"{execution(e_sleepy).get('status')} after {time.time() - t1:.0f} s, "
@@ -509,11 +568,12 @@ def run_checks(cl):
 
     # ---- a pod lost mid-run: the retried pod never runs the execution twice
     e_killed = run("killed")
-    wait_for(lambda: "killed-started" in output(e_killed), 600)
+    wait_for(lambda: "killed-started" in output(e_killed, 1), 600)
     kname = cl.job_for(e_killed)["metadata"]["name"]
     check("pod loss: the pod is killed mid-run", cl.kill_pod(kname))
     status = done(e_killed, 600)
     wait_for(lambda: cl.job_result(kname), 400)
+    cl.remember(kname)
     exits = cl.pod_exits(kname)
     check("pod loss: the replacement pod ends the run instead of running it again",
           cl.pod_attempts(kname) == 2 and exits and exits[-1] == 3 and status not in ("succeeded", "running", "queued")
@@ -525,8 +585,8 @@ def run_checks(cl):
     cl.delete_job(sname)
     t2 = time.time()
     status = done(e_swept, 420)
-    check("sweeper: a queued run whose Job is gone ends incomplete", status not in ("queued", "running", "succeeded")
-          and "swept-must-not-run" not in output(e_swept), f"{status} after {time.time() - t2:.0f} s")
+    check("sweeper: a queued run whose Job is gone ends incomplete", status in ("incomplete", "other")
+          and "swept-must-not-run" not in output(e_swept, 3), f"{status} after {time.time() - t2:.0f} s")
 
     # ---- run later is refused
     s, body = call(api, f"/api/{API}/job/{u['hello']}/run", "POST",
@@ -545,13 +605,14 @@ def run_checks(cl):
     check("schedule: isolated job imported", s == 200 and '"succeeded":[{' in body, body[:160])
     cj = wait_for(lambda: cl.cronjob_for(u["sched"]), 90)
     cj_name = cj["metadata"]["name"] if cj else ""
-    want_cron = "*/1 * * * *" if m2c.EKS else f"{at.tm_min} {at.tm_hour} * * *"
+    want_cron = ("0-59/1 * * * *", "*/1 * * * *", "* * * * *") if m2c.EKS else (f"{at.tm_min} {at.tm_hour} * * *",)
     check("schedule: the isolated job gets its own CronJob (probe class)", bool(cj)
-          and cj["spec"]["schedule"] == want_cron and cj["spec"]["timeZone"] == "UTC"
+          and cj["spec"]["schedule"] in want_cron and cj["spec"]["timeZone"] == "UTC"
           and cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]["serviceAccountName"] == "kestrel-isolated-probe",
-          cj_name)
+          f"{cj_name} {cj and cj['spec']['schedule']} {cj and cj['spec']['timeZone']}")
+    t_import = time.time()
     check("schedule: no pool bucket CronJob for it", not [b for b in cl.trigger_cronjobs()
-                                                          if b["spec"]["schedule"] == want_cron])
+                                                          if b["spec"]["schedule"] in want_cron])
 
     def sched_execs():
         s, body = call(api, f"/api/{API}/job/{u['sched']}/executions?max=50", headers=T)
@@ -559,17 +620,22 @@ def run_checks(cl):
     want_runs = 3 if m2c.EKS else 1
     ok_runs = wait_for(lambda: len([e for e in sched_execs() if e.get("status") == "succeeded"]) >= want_runs,
                        420 + 60 * want_runs, 5)
-    fired = cl.jobs_of(cj_name)
+    # The CronJob controller keeps only the last finished Job, so map each run to the Job name
+    # of any minute since the import (<cronjob>-<minutes since epoch>).
+    minutes = range(int(t_import // 60) - 1, int(time.time() // 60) + 1)
+    firing_servers = {sid(f"{cj_name}-{m}"): m for m in minutes}
     execs = sched_execs()
     by_server = {}
     for e in execs:
         by_server[e.get("serverUUID")] = by_server.get(e.get("serverUUID"), 0) + 1
-    check(f"schedule: {want_runs} firing(s), each run once in the pod of its minute",
-          ok_runs and set(by_server) <= {sid(n) for n in fired} and all(n == 1 for n in by_server.values()),
-          f"executions={len(execs)} by server={by_server} jobs={fired}")
-    starts = [(e["date-started"]["unixtime"] / 1000) % 60 for e in execs if e.get("date-started")]
-    if starts:
-        TIMES.append(("scheduled firing to start (s after the minute)", sum(starts) / len(starts)))
+    check(f"schedule: {want_runs}+ firing(s), each run once in the pod of its minute",
+          ok_runs and set(by_server) <= set(firing_servers) and all(n == 1 for n in by_server.values()),
+          f"executions={len(execs)} minutes={sorted(firing_servers[x] for x in by_server if x in firing_servers)}")
+    delays = [e["date-started"]["unixtime"] / 1000 - firing_servers[e["serverUUID"]] * 60
+              for e in execs if e.get("date-started") and e.get("serverUUID") in firing_servers]
+    if delays:
+        TIMES.append(("scheduled minute to run start, mean", sum(delays) / len(delays)))
+        TIMES.append(("scheduled minute to run start, max", max(delays)))
 
     s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&dupeOption=update&uuidOption=preserve",
                    "POST", sched_yaml(None), headers=T, ctype="application/yaml")
@@ -577,11 +643,15 @@ def run_checks(cl):
     check("schedule: switching the job to the pool deletes its CronJob", gone and s == 200)
     call(api, f"/api/{API}/job/{u['sched']}/schedule/disable", "POST", headers=T)
 
-    errors = [e for e in cl.pod_errors() if not any(x in e for x in m2c.EXPECTED_ERRORS + ("Stale Execution cleaned up",))]
+    errors = [e for e in cl.pod_errors() if not any(x in e for x in m2c.EXPECTED_ERRORS + ("Stale Execution cleaned up",)
+                                                    + tuple(f"[ID#{x}:" for x in (e_swept, e_killed)))]
     check("isolated pods: no unexpected ERROR lines", not errors, "\n      ".join(errors[:8]))
     # expected on web: the sweeper ending the swept run, and upstream logging the refused run-later
+    # ...and upstream's log-storage request for a run another pod held (swept, or its pod lost):
+    # the log is not on this pod (the pod checkpointed it to the log store, or it never ran)
+    orphaned = tuple(f"[ID#{x}:" for x in (e_swept, e_killed))
     web_errors = [e for e in cl.web_errors(since) if not any(x in e for x in m2c.EXPECTED_ERRORS + (
-        "Stale Execution cleaned up", "Unable to create execution"))]
+        "Stale Execution cleaned up", "Unable to create execution") + orphaned)]
     check("web: no unexpected ERROR lines", not web_errors, "\n      ".join(web_errors[:8]))
     for name, value in TIMES:
         print(f"      {name}: {value:.0f} s")

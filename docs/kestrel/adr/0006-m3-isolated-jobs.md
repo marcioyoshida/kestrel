@@ -1,6 +1,7 @@
 # ADR 0006: M3 isolated jobs, a Kubernetes Job per run, as built
 
 - Status: Accepted (2026-10-11), step 1 of the M3 runner work: isolated runs on the same image.
+  Validated locally (29/29) and on EKS (31/31, [record](../validation/2026-10-11-m3-isolated-eks.md)).
   The slim headless engine and AppCDS (step 2) come later, measured against this baseline.
 - Refines: ADR 0001 §3 (runner modes) and ADR 0003 ("run-now stays on the web pod").
 
@@ -104,21 +105,26 @@ Only web pods call the Kubernetes API. They may now also:
 - get PodTemplates;
 - create Secrets.
 
-Isolated pods have no service-account token; Pod Identity uses its own. In the reference
+Isolated pods have no service-account token; Pod Identity uses its own. They are annotated
+`karpenter.sh/do-not-disrupt: "true"`, so node consolidation (EKS Auto Mode, Karpenter) waits for
+a run to end instead of evicting it. In the reference
 environment, each class's service account has its own IAM role with the same data, ledger and log
 access as runners, and no SQS.
 
 ## Limits (step 1)
 
-- **Start-up time.** A run waits for a full application boot (see the validation record for the
-  measured times), so isolated mode suits heavy or infrequent jobs. Pool jobs are unaffected.
-  Step 2 (headless engine, AppCDS) targets this.
+- **Start-up time.** A run waits for a full application boot. On EKS, a run-now was queued for
+  88–100 s, of which about 31 s was getting a node and starting the container. A scheduled run
+  started 88–96 s after its minute. Isolated mode therefore suits heavy or infrequent jobs; pool
+  jobs are unaffected. Step 2 (headless engine, AppCDS) targets the application start.
 - **Run later is refused.** The run would otherwise happen on a web pod with the web pod's
   identity.
 - **Job references run in place.** A job reference step runs the referenced job inside the
   calling pod, as upstream does. The execution log warns that the run is not isolated.
 - **Aborting a queued run takes effect when its pod starts.** It never runs. A pod that cannot
   start at all is ended by the Job's deadline and then the sweeper.
+- **The first log read after a run** returns empty while the web pod fetches the log from S3.
+  This is upstream's behaviour for any execution another pod ran; the next read has it.
 
 ## Consequences
 

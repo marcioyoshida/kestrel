@@ -71,6 +71,7 @@ grep -q 'KESTREL_ISOLATED_POD_TEMPLATE_PREFIX: "kestrel-isolated-"' <<<"$iout"
 grep -q 'serviceAccountName: kestrel-probe' <<<"$iout"
 grep -q 'kestrel.io/active-deadline-seconds: "900"' <<<"$iout"
 grep -q 'pool: probe' <<<"$iout"
+[ "$(grep -c 'karpenter.sh/do-not-disrupt: "true"' <<<"$iout")" -eq 2 ]   # isolated pods only
 grep -q 'resources: \["podtemplates"\]' <<<"$iout"
 grep -q 'resources: \["secrets"\]' <<<"$iout"
 ! grep -q 'verbs: \[.*"get".*\]' <<<"$(grep -A2 '"secrets"' <<<"$iout")"   # create only, never read

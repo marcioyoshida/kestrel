@@ -7,6 +7,11 @@ source "$(dirname "$0")/lib.sh"
 
 if aws eks describe-cluster --name kestrel-ref >/dev/null 2>&1; then
   aws eks update-kubeconfig --name kestrel-ref --alias "$KCTX" >/dev/null
+  # Kestrel's own CronJobs and Jobs (schedules, isolated runs) are not Helm resources; left
+  # behind, they keep starting pods and the nodes never drain.
+  log "delete Kestrel-managed CronJobs and Jobs"
+  kubectl --context "$KCTX" -n "$NS" delete cronjobs -l kestrel.io/managed-by=kestrel --wait=false || true
+  kubectl --context "$KCTX" -n "$NS" delete jobs -l 'app.kubernetes.io/component in (isolated,trigger)' --wait=false || true
   log "helm uninstall"
   helm --kube-context "$KCTX" -n "$NS" uninstall "$RELEASE" --wait --timeout 10m || true
   # Auto Mode nodes drain away once nothing is scheduled; wait so their ENIs don't block the VPC.

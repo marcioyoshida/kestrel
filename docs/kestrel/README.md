@@ -59,7 +59,12 @@ stateful server:
   runs it against a fake GitHub: 27/27, job live 5.4 s after the push
   ([record](validation/2026-10-11-m3-github-local.md)). The EKS exit test needs a real
   GitHub App. Synced jobs are read-only outside GitHub; Edit opens the file in GitHub (35/35).
-  Still to do: the headless engine and isolated runs, and AppCDS.
+  **Isolated jobs** ([ADR 0006](adr/0006-m3-isolated-jobs.md)): a job can run each execution in
+  its own Kubernetes Job, from a runner class with its own IAM role, node selector and resources.
+  Validated on EKS: 31/31, including each class's IAM role, secure options, abort, pod loss and
+  scheduled firings exactly once ([record](validation/2026-10-11-m3-isolated-eks.md)). A run
+  waits about 90–100 s for its pod.
+  Still to do: the headless engine and AppCDS, to cut that start-up time.
 
 ## Build, deploy, prove, tear down
 
