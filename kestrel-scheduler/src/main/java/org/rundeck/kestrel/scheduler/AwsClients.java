@@ -61,10 +61,16 @@ public final class AwsClients {
      * @return SQS client; long polls of 20 s fit within the 30 s socket timeout
      */
     static SqsClient sqs(String region) {
-        return SqsClient.builder().region(Region.of(region))
+        var b = SqsClient.builder().region(Region.of(region))
             .httpClientBuilder(UrlConnectionHttpClient.builder()
-                .socketTimeout(java.time.Duration.ofSeconds(30)))
-            .build();
+                .socketTimeout(java.time.Duration.ofSeconds(30)));
+        String endpoint = System.getenv("KESTREL_SQS_ENDPOINT");  // ElasticMQ (kind, dev/test)
+        if (endpoint != null && !endpoint.isBlank()) {
+            b.endpointOverride(java.net.URI.create(endpoint))
+             .credentialsProvider(software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(
+                 software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create("local", "local")));
+        }
+        return b.build();
     }
 
     /**

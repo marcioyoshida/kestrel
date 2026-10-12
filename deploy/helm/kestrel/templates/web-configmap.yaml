@@ -67,6 +67,12 @@ data:
   RUNDECK_PREAUTH_REDIRECT_LOGOUT: "true"
   RUNDECK_PREAUTH_REDIRECT_URL: "/oauth2/sign_out"
   {{- end }}
+  {{- if .Values.localAws.enabled }}
+  # Local stand-ins for AWS (kind): fixed local credentials, never Pod Identity.
+  KESTREL_DYNAMODB_ENDPOINT: {{ .Values.localAws.dynamodbEndpoint | quote }}
+  KESTREL_SQS_ENDPOINT: {{ .Values.localAws.sqsEndpoint | quote }}
+  KESTREL_S3_ENDPOINT: {{ .Values.localAws.s3Endpoint | quote }}
+  {{- end }}
   {{- if eq .Values.storage.mode "dynamodb" }}
   KESTREL_STORAGE: dynamodb
   KESTREL_DYNAMODB_PREFIX: {{ .Values.storage.dynamodb.tablePrefix | quote }}

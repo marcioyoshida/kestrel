@@ -79,6 +79,16 @@ grep -q 'resources: \["secrets"\]' <<<"$iout"
 [ "$(grep -c 'readinessProbe' <<<"$iout")" -eq "$(grep -c 'readinessProbe' <<<"$kout")" ]  # none on isolated pods
 ! grep -q -E 'KESTREL_ISOLATED|podtemplates' <<<"$kout"
 
+# kind (deploy/kind): AWS stand-ins for every pod, a fixed NodePort, no stand-in env on EKS values.
+lout=$(helm template kestrel . -n kestrel -f ../../kind/values.yaml)
+kubeconform -strict -summary -kubernetes-version "$K8S" - <<<"$lout"
+grep -q 'KESTREL_SQS_ENDPOINT: "http://elasticmq.kestrel-aws:9324"' <<<"$lout"
+grep -q 'KESTREL_S3_ENDPOINT: "http://s3mock.kestrel-aws:9090"' <<<"$lout"
+grep -q 'KESTREL_DYNAMODB_ENDPOINT: "http://dynamodb-local.kestrel-aws:8000"' <<<"$lout"
+grep -q 'nodePort: 30440' <<<"$lout"
+[ "$(grep -c '^kind: PodTemplate' <<<"$lout")" -eq 2 ]
+! grep -q -E '_ENDPOINT|nodePort' <<<"$iout"
+
 expect_fail() {  # <description> <expected message fragment> <helm --set args...>
   local desc=$1 msg=$2; shift 2
   if err=$(helm template kestrel . -f "$REF" "$@" 2>&1); then
@@ -110,4 +120,5 @@ expect_fail "github without roles"        "github.roles is required"           -
 expect_fail "github without secret"       "github.existingSecret is required"  --set github.enabled=true --set github.appId=1 --set 'github.repos={a/b}' --set 'github.roles={r}'
 expect_fail "isolated in quartz mode"    "requires scheduler.mode=kubernetes" --set isolated.enabled=true
 expect_fail "isolated, bad class name"   "DNS label"                          -f ci/ref-values-kubernetes.yaml --set isolated.enabled=true --set isolated.classes.Big_One.resources=null
+expect_fail "local AWS without endpoints"  "localAws.dynamodbEndpoint"          --set localAws.enabled=true
 echo "chart checks passed"

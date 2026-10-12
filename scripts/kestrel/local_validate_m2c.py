@@ -26,12 +26,17 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 EKS = "--eks" in sys.argv
+# --kind: Kestrel on the local kind cluster (scripts/kestrel/kind_up.sh); local sign-in and
+# DynamoDB Local on :8000 as without a cluster, pod logs through kubectl.
+KIND = "--kind" in sys.argv
+if KIND:
+    os.environ.setdefault("KESTREL_KUBE_CONTEXT", "kind-kestrel")
 BASE = os.environ.get("KESTREL_URL", "http://127.0.0.1:4440")
 API = 60
 DDB = ["aws", "dynamodb", "--output", "json"] if EKS else \
     ["aws", "dynamodb", "--endpoint-url", "http://localhost:8000", "--region", "us-east-1", "--output", "json"]
 ENV = dict(os.environ) if EKS else dict(os.environ, AWS_ACCESS_KEY_ID="local", AWS_SECRET_ACCESS_KEY="local")
-PREFIX = "kestrel-ref" if EKS else "local"
+PREFIX = "kestrel-ref" if EKS else "kestrel-local" if KIND else "local"
 LOG = os.environ.get("KESTREL_LOG", "/tmp/kestrel-local/rundeck.log")
 # expected: the job's notification points at a closed port; the aborted run logs its interruption
 EXPECTED_ERRORS = ("Connection refused", "Execution interrupted", "Cancellation while running", "Step 1 failed", "Error executing node step", "Execution failed:")
@@ -95,7 +100,7 @@ def sign_in():
 
 def server_errors(since):
     """ERROR lines logged since the run started that are not expected ones."""
-    if EKS:
+    if EKS or KIND:
         import soak
         pods = [p for p in soak.kubectl("get", "pods", "-o", "jsonpath={range .items[*]}{.metadata.name} {end}").split()
                 if p.startswith(("kestrel-web-", "kestrel-runner-"))]

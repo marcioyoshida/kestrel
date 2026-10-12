@@ -1,0 +1,101 @@
+# Stand-ins for the AWS services Kestrel uses, so kind needs no AWS account (chart: localAws).
+#   DynamoDB Local  - data tables, fire ledger, sessions, cluster bus (in memory)
+#   ElasticMQ       - the SQS FIFO fire queue
+#   S3Mock          - the execution log bucket (path-style only)
+# Everything is in memory: deleting the namespace (or the cluster) starts from empty.
+apiVersion: v1
+kind: Namespace
+metadata: { name: kestrel-aws }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dynamodb-local, namespace: kestrel-aws }
+spec:
+  selector: { matchLabels: { app: dynamodb-local } }
+  template:
+    metadata: { labels: { app: dynamodb-local } }
+    spec:
+      containers:
+        - name: dynamodb-local
+          image: amazon/dynamodb-local:3.3.1
+          args: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { tcpSocket: { port: 8000 }, periodSeconds: 2 }
+          resources: { requests: { cpu: 250m, memory: 1Gi }, limits: { memory: 1536Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dynamodb-local, namespace: kestrel-aws }
+spec:
+  type: NodePort
+  selector: { app: dynamodb-local }
+  ports: [{ port: 8000, targetPort: 8000, nodePort: 30800 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: elasticmq, namespace: kestrel-aws }
+data:
+  # Mirrors KestrelRef's fire queue: FIFO, explicit deduplication ids, 120 s visibility, DLQ after 10.
+  elasticmq.conf: |
+    include classpath("application.conf")
+    node-address { protocol = http, host = "elasticmq.kestrel-aws", port = 9324, context-path = "" }
+    rest-sqs { enabled = true, bind-port = 9324, bind-hostname = "0.0.0.0", sqs-limits = strict }
+    rest-stats { enabled = false }
+    queues {
+      "kestrel-fires-dlq.fifo" { fifo = true }
+      "kestrel-fires.fifo" {
+        fifo = true
+        contentBasedDeduplication = false
+        defaultVisibilityTimeout = 120 seconds
+        deadLettersQueue { name = "kestrel-fires-dlq.fifo", maxReceiveCount = 10 }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: elasticmq, namespace: kestrel-aws }
+spec:
+  selector: { matchLabels: { app: elasticmq } }
+  template:
+    metadata: { labels: { app: elasticmq } }
+    spec:
+      containers:
+        - name: elasticmq
+          image: softwaremill/elasticmq-native:1.7.1
+          ports: [{ containerPort: 9324 }]
+          volumeMounts: [{ name: conf, mountPath: /opt/elasticmq.conf, subPath: elasticmq.conf }]
+          readinessProbe: { tcpSocket: { port: 9324 }, periodSeconds: 2 }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+      volumes: [{ name: conf, configMap: { name: elasticmq } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: elasticmq, namespace: kestrel-aws }
+spec:
+  selector: { app: elasticmq }
+  ports: [{ port: 9324, targetPort: 9324 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: s3mock, namespace: kestrel-aws }
+spec:
+  selector: { matchLabels: { app: s3mock } }
+  template:
+    metadata: { labels: { app: s3mock } }
+    spec:
+      containers:
+        - name: s3mock
+          image: adobe/s3mock:5.2.3
+          env:
+            - { name: COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS, value: kestrel-logs }
+            - { name: COM_ADOBE_TESTING_S3MOCK_STORE_REGION, value: us-east-1 }
+          ports: [{ containerPort: 9090 }]
+          readinessProbe: { tcpSocket: { port: 9090 }, periodSeconds: 2 }
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: s3mock, namespace: kestrel-aws }
+spec:
+  selector: { app: s3mock }
+  ports: [{ port: 9090, targetPort: 9090 }]

@@ -116,7 +116,7 @@ class KestrelSchedulerRuntime implements ApplicationListener<ApplicationReadyEve
             reconciler = new CronJobReconciler(api, kestrelSettings.namespace, new CronJobTemplate(
                 new CronJobTemplate.Settings(kestrelSettings.triggerImage, kestrelSettings.triggerServiceAccount,
                     kestrelSettings.queueUrl, kestrelSettings.region, kestrelSettings.startingDeadlineSeconds,
-                    kestrelSettings.triggerNodeSelector)))
+                    kestrelSettings.triggerNodeSelector).sqsEndpoint(kestrelSettings.sqsEndpoint)))
             long renew = Math.max(1, (long) (kestrelSettings.leaseDuration.seconds / 3))
             loops.scheduleWithFixedDelay(this.&leaderTick, 0, renew, TimeUnit.SECONDS)
         }

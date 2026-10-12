@@ -44,6 +44,9 @@ PROXY_PORT = 4180  # oauth2-proxy sidecar; Rundeck itself listens on 127.0.0.1:4
 # CloudFront VPC origins are unsupported in use1-az3, which is us-east-1e in this account.
 AZS = ["us-east-1a", "us-east-1b"]
 CLOUDFRONT_ORIGIN_FACING_PL = "pl-3b927c52"  # com.amazonaws.global.cloudfront.origin-facing
+# KestrelCi's reaper deletes this stack when its lease runs out (ci_stack.REAPER_ROLE_NAME); it
+# needs cluster access to empty the cluster first.
+REAPER_ROLE_NAME = "kestrel-ref-reaper"
 
 
 class KestrelStack(Stack):
@@ -92,6 +95,24 @@ class KestrelStack(Stack):
         )
         cluster_role.assume_role_policy.add_statements(iam.PolicyStatement(
             actions=["sts:TagSession"], principals=[iam.ServicePrincipal("eks.amazonaws.com")]))
+        # The managed policies refuse user-defined tags on what Auto Mode launches; the `kestrel`
+        # NodeClass tags nodes, their volumes and ENIs project=kestrel (cost allocation). From
+        # https://docs.aws.amazon.com/eks/latest/userguide/auto-cluster-iam-role.html#tag-prop
+        same_cluster = {"aws:RequestTag/eks:eks-cluster-name": "${aws:PrincipalTag/eks:eks-cluster-name}"}
+        cluster_role.add_to_policy(iam.PolicyStatement(
+            sid="TagCompute", actions=["ec2:CreateFleet", "ec2:RunInstances", "ec2:CreateLaunchTemplate"],
+            resources=["*"], conditions={
+                "StringEquals": same_cluster,
+                "StringLike": {"aws:RequestTag/eks:kubernetes-node-class-name": "*",
+                               "aws:RequestTag/eks:kubernetes-node-pool-name": "*"}}))
+        cluster_role.add_to_policy(iam.PolicyStatement(
+            sid="TagStorage", actions=["ec2:CreateVolume", "ec2:CreateSnapshot"],
+            resources=["arn:aws:ec2:*:*:volume/*", "arn:aws:ec2:*:*:snapshot/*"],
+            conditions={"StringEquals": same_cluster}))
+        cluster_role.add_to_policy(iam.PolicyStatement(
+            sid="TagNetworking", actions=["ec2:CreateNetworkInterface"], resources=["*"], conditions={
+                "StringEquals": same_cluster,
+                "StringLike": {"aws:RequestTag/eks:kubernetes-cni-node-name": "*"}}))
         node_role = iam.Role(
             self, "NodeRole",
             assumed_by=iam.ServicePrincipal("ec2.amazonaws.com"),
@@ -116,8 +137,11 @@ class KestrelStack(Stack):
                 bootstrap_cluster_creator_admin_permissions=False,
             ),
             bootstrap_self_managed_addons=False,  # required by Auto Mode
+            # No built-in general-purpose pool: workloads run on the `kestrel` NodePool deploy.sh
+            # applies: spot first, at most 4 vCPU per node, tagged project=kestrel so the KestrelCi
+            # budget sees node costs.
             compute_config=eks.CfnCluster.ComputeConfigProperty(
-                enabled=True, node_pools=["general-purpose", "system"], node_role_arn=node_role.role_arn),
+                enabled=True, node_pools=["system"], node_role_arn=node_role.role_arn),
             kubernetes_network_config=eks.CfnCluster.KubernetesNetworkConfigProperty(
                 elastic_load_balancing=eks.CfnCluster.ElasticLoadBalancingProperty(enabled=True)),
             storage_config=eks.CfnCluster.StorageConfigProperty(
@@ -131,6 +155,16 @@ class KestrelStack(Stack):
             self, "AdminAccess",
             cluster_name=cluster.ref,
             principal_arn=admin_principal_arn,
+            access_policies=[eks.CfnAccessEntry.AccessPolicyProperty(
+                policy_arn="arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
+                access_scope=eks.CfnAccessEntry.AccessScopeProperty(type="cluster"),
+            )],
+        )
+
+        eks.CfnAccessEntry(
+            self, "ReaperAccess",
+            cluster_name=cluster.ref,
+            principal_arn=f"arn:aws:iam::{self.account}:role/{REAPER_ROLE_NAME}",
             access_policies=[eks.CfnAccessEntry.AccessPolicyProperty(
                 policy_arn="arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
                 access_scope=eks.CfnAccessEntry.AccessScopeProperty(type="cluster"),
@@ -340,6 +374,9 @@ class KestrelStack(Stack):
         # ---------------------------------------------------------------- outputs (read by deploy.sh)
         for k, v in {
             "ClusterName": cluster.ref,
+            "ClusterSecurityGroupId": cluster_sg_id,
+            "NodeRoleName": node_role.role_name,
+            "PrivateSubnetIds": ",".join(s.subnet_id for s in vpc.private_subnets),
             "PublicUrl": public_url,
             "DistributionId": dist.distribution_id,
             "TargetGroupArn": tg.target_group_arn,

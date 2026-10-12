@@ -151,6 +151,17 @@ github:
 service:
   type: ClusterIP
   port: 4440
+  nodePort: null     # with type NodePort: a fixed port (kind maps it to the host)
+
+# Local stand-ins for AWS (kind and other dev clusters; never production): DynamoDB Local,
+# ElasticMQ for the SQS FIFO fire queue, an S3-compatible server for logs. Pods, trigger pods
+# included, then use fixed local credentials instead of Pod Identity, and scheduler.queueUrl may
+# be the stand-in's own queue URL.
+localAws:
+  enabled: false
+  dynamodbEndpoint: ""   # e.g. http://dynamodb-local:8000
+  sqsEndpoint: ""        # e.g. http://elasticmq:9324
+  s3Endpoint: ""         # e.g. http://s3mock:9090
 
 ingress:
   # Internal ALB (AWS Load Balancer Controller) used as a CloudFront VPC Origin.

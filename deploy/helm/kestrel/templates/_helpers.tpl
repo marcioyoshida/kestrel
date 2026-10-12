@@ -57,8 +57,15 @@ misbehaves (double-firing schedules, logs that never reach S3, random login redi
 {{- if and (eq .Values.storage.mode "dynamodb") (not (regexMatch "^[a-zA-Z0-9_.-]{3,200}$" (default "" .Values.storage.dynamodb.tablePrefix))) -}}
 {{- fail "storage.dynamodb.tablePrefix is required in dynamodb mode (letters, digits, _ . -)" -}}
 {{- end -}}
+{{- if .Values.localAws.enabled -}}
+{{- range $k := list "dynamodbEndpoint" "sqsEndpoint" "s3Endpoint" -}}
+{{- if not (regexMatch "^https?://" (default "" (get $.Values.localAws $k))) -}}
+{{- fail (printf "localAws.%s must be an http(s) URL when localAws.enabled=true" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if eq .Values.scheduler.mode "kubernetes" -}}
-{{- if not (hasPrefix "https://sqs." (default "" .Values.scheduler.queueUrl)) -}}
+{{- if and (not .Values.localAws.enabled) (not (hasPrefix "https://sqs." (default "" .Values.scheduler.queueUrl))) -}}
 {{- fail "scheduler.queueUrl must be the SQS FIFO fire queue URL (https://sqs.<region>.amazonaws.com/...fifo)" -}}
 {{- end -}}
 {{- if not (hasSuffix ".fifo" .Values.scheduler.queueUrl) -}}

@@ -26,6 +26,20 @@ class CronJobReconcilerSpec extends Specification {
         second.unchanged == 2
     }
 
+    def "an SQS stand-in endpoint reaches trigger pods; without one their env is unchanged"() {
+        given:
+        def plain = new CronJobTemplate(settings).render(b('0 */5 * ? * *'))
+        def local = new CronJobTemplate(new CronJobTemplate.Settings('t', 'sa', 'http://elasticmq:9324/q.fifo',
+            'us-east-1', 600, [:]).sqsEndpoint('http://elasticmq:9324')).render(b('0 */5 * ? * *'))
+        def envOf = { cj -> cj.at('/spec/jobTemplate/spec/template/spec/containers/0/env')*.get('name')*.asText() }
+        def valueOf = { cj, n -> cj.at('/spec/jobTemplate/spec/template/spec/containers/0/env').find { it.get('name').asText() == n }?.get('value')?.asText() }
+
+        expect:
+        !envOf(plain).any { it.startsWith('AWS_ENDPOINT') || it == 'AWS_ACCESS_KEY_ID' }
+        valueOf(local, 'AWS_ENDPOINT_URL_SQS') == 'http://elasticmq:9324'
+        valueOf(local, 'AWS_ACCESS_KEY_ID') == 'local'
+    }
+
     def "time zone is part of the bucket"() {
         expect:
         b('0 0 12 * * ?', 'UTC').name != b('0 0 12 * * ?', 'America/Sao_Paulo').name

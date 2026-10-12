@@ -4,6 +4,8 @@ fake_kube.py, whose "pods" are real one-shot Kestrel JVMs. Needs JDK 17, DynamoD
 and the CI war of the commit under test.
 
     python3 scripts/kestrel/local_validate_m3_isolated.py [commit]     (default HEAD)
+    python3 scripts/kestrel/local_validate_m3_isolated.py --kind       (after kind_up.sh)
+    python3 scripts/kestrel/local_validate_m3_isolated.py --eks        (after deploy.sh)
 
 Checks: run-now -> queued -> its own Job -> succeeded in that pod; secure options through a
 Secret the Job owns; a failure fails the Job without a retry; abort before and during the run; a
@@ -148,8 +150,8 @@ def job_yaml(name, uuid, cls=None, script="echo hi", options="", schedule="", ex
 
 def main():
     started = time.time()
-    if m2c.EKS:
-        run_checks(EksCluster())
+    if m2c.EKS or m2c.KIND:
+        run_checks(KubeCluster())
     else:
         commit = next((a for a in sys.argv[1:] if not a.startswith("-")), "HEAD")
         os.makedirs(BASE, exist_ok=True)
@@ -242,8 +244,8 @@ class FakeCluster:
         return {}
 
 
-class EksCluster:
-    """The checks' view of Kubernetes on the reference EKS cluster (kubectl)."""
+class KubeCluster:
+    """The checks' view of a real cluster through kubectl: EKS (--eks) or kind (--kind)."""
 
     def __init__(self):
         import soak
@@ -595,9 +597,10 @@ def run_checks(cl):
     check("run later: refused for an isolated job", s != 200 and "not supported" in body, f"HTTP {s} {body[:160]}")
 
     # ---- scheduled: its own CronJob, one run per firing, in the probe class; one firing (a
-    # fixed minute, UTC) locally, where every firing boots a JVM
+    # fixed minute, UTC) without a cluster, where every firing boots a JVM next to the others
     at = time.gmtime(time.time() + 150)
-    cron = "0 0/1 * ? * * *" if m2c.EKS else f"0 {at.tm_min} {at.tm_hour} ? * * *"
+    cluster = m2c.EKS or m2c.KIND
+    cron = "0 0/1 * ? * * *" if cluster else f"0 {at.tm_min} {at.tm_hour} ? * * *"
     sched_yaml = lambda cls: job_yaml("sched", u["sched"], cls, 'echo "scheduled server=$RD_JOB_SERVERUUID"',
                                       schedule=f"  timeZone: UTC\n  schedule:\n    crontab: '{cron}'\n")
     s, body = call(api, f"/api/{API}/project/{p}/jobs/import?fileformat=yaml&uuidOption=preserve", "POST",
@@ -605,7 +608,7 @@ def run_checks(cl):
     check("schedule: isolated job imported", s == 200 and '"succeeded":[{' in body, body[:160])
     cj = wait_for(lambda: cl.cronjob_for(u["sched"]), 90)
     cj_name = cj["metadata"]["name"] if cj else ""
-    want_cron = ("0-59/1 * * * *", "*/1 * * * *", "* * * * *") if m2c.EKS else (f"{at.tm_min} {at.tm_hour} * * *",)
+    want_cron = ("0-59/1 * * * *", "*/1 * * * *", "* * * * *") if cluster else (f"{at.tm_min} {at.tm_hour} * * *",)
     check("schedule: the isolated job gets its own CronJob (probe class)", bool(cj)
           and cj["spec"]["schedule"] in want_cron and cj["spec"]["timeZone"] == "UTC"
           and cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]["serviceAccountName"] == "kestrel-isolated-probe",
@@ -617,7 +620,7 @@ def run_checks(cl):
     def sched_execs():
         s, body = call(api, f"/api/{API}/job/{u['sched']}/executions?max=50", headers=T)
         return json.loads(body).get("executions", []) if s == 200 else []
-    want_runs = 3 if m2c.EKS else 1
+    want_runs = 3 if cluster else 1
     ok_runs = wait_for(lambda: len([e for e in sched_execs() if e.get("status") == "succeeded"]) >= want_runs,
                        420 + 60 * want_runs, 5)
     # The CronJob controller keeps only the last finished Job, so map each run to the Job name

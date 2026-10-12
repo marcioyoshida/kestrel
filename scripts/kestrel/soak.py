@@ -33,7 +33,7 @@ import validate as v  # noqa: E402  (shared helpers: sign-in, HTTP, AWS CLI)
 API = v.API
 # Unique per run: Rundeck deletes projects asynchronously, so reusing a name races the deletion.
 PROJECT = f"kestrel-soak-{secrets.token_hex(3)}"
-K = ["kubectl", "--context", "kestrel-ref", "-n", "kestrel"]
+K = ["kubectl", "--context", __import__("os").environ.get("KESTREL_KUBE_CONTEXT", "kestrel-ref"), "-n", "kestrel"]
 
 JOBS = """
 - name: every-minute-a

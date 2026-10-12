@@ -17,3 +17,12 @@ out() {
 }
 
 k() { kubectl --context "$KCTX" -n "$NS" "$@"; }
+
+# lease <hours>: KestrelCi's reaper deletes KestrelRef once this time has passed (infra/reaper).
+LEASE_PARAM=/kestrel/ref/lease-until
+lease() {
+  local until
+  until=$(date -u -d "+$1 hours" +%Y-%m-%dT%H:%M:%SZ)
+  aws ssm put-parameter --name "$LEASE_PARAM" --type String --overwrite --value "$until" >/dev/null
+  log "KestrelRef lease until $until (the reaper deletes the environment after that)"
+}

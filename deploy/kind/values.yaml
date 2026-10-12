@@ -1,0 +1,33 @@
+# Kestrel on kind (scripts/kestrel/kind_up.sh): the reference environment's settings, with the
+# AWS stand-ins of aws-standins.yaml instead of AWS, no sign-in proxy (Rundeck's own login), and
+# smaller pods so web x2 + runner + two isolated pods fit on a laptop.
+publicUrl: http://localhost:4440
+image: { repository: kestrel, tag: local, pullPolicy: Never }   # kind_up.sh loads the CI image
+scheduler:
+  mode: kubernetes
+  queueUrl: http://elasticmq.kestrel-aws:9324/000000000000/kestrel-fires.fifo
+  ledgerTable: kestrel-local-ledger
+  region: us-east-1
+  trigger: { image: "kestrel-trigger:local" }
+web:
+  replicas: 2
+  resources: { requests: { cpu: 250m, memory: 2Gi }, limits: { memory: 2Gi } }
+runner:
+  replicas: 1
+  resources: { requests: { cpu: 250m, memory: 2Gi }, limits: { memory: 2Gi } }
+isolated:
+  enabled: true
+  classes:
+    default: {}
+    probe: { activeDeadlineSeconds: 1800 }
+storage: { mode: dynamodb, dynamodb: { tablePrefix: kestrel-local } }
+keyStorage: { existingSecret: kestrel-keystorage }
+logStorage: { s3: { enabled: true, provider: kestrel-s3, bucket: kestrel-logs, region: us-east-1 } }
+auth: { enabled: false }
+ingress: { enabled: false }
+service: { type: NodePort, nodePort: 30440 }
+localAws:
+  enabled: true
+  dynamodbEndpoint: http://dynamodb-local.kestrel-aws:8000
+  sqsEndpoint: http://elasticmq.kestrel-aws:9324
+  s3Endpoint: http://s3mock.kestrel-aws:9090

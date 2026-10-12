@@ -13,8 +13,8 @@ from kestrel_stack import KestrelStack
 
 app = cdk.App()
 env = cdk.Environment(account="668449743071", region="us-east-1")
-KestrelCiStack(app, "KestrelCi", env=env)
-KestrelStack(
+ci = KestrelCiStack(app, "KestrelCi", env=env)
+ref = KestrelStack(
     app, "KestrelRef",
     env=env,
     admin_principal_arn=app.node.try_get_context("adminPrincipalArn")
@@ -22,4 +22,5 @@ KestrelStack(
     ephemeral=str(app.node.try_get_context("ephemeral")).lower() == "true",
     rdbms=str(app.node.try_get_context("rdbms")).lower() == "true",
 )
+ref.add_dependency(ci)  # the reaper role KestrelRef grants cluster access must exist first
 app.synth()

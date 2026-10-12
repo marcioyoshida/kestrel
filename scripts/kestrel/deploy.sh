@@ -10,9 +10,14 @@
 #      SCHEDULER_MODE=kubernetes|quartz (default kubernetes: CronJobs + SQS + runners, M1),
 #      WEB_REPLICAS (default 2 in kubernetes mode), RUNNER_REPLICAS (default 1),
 #      STORAGE_MODE=dynamodb|rdbms (default dynamodb, ADR 0004; rdbms adds RDS to the stack),
-#      SKIP_CDK=1 to reuse already-deployed stacks.
+#      SKIP_CDK=1 to reuse already-deployed stacks,
+#      KESTREL_LEASE_HOURS (default 8): KestrelCi's reaper deletes KestrelRef when the lease ends
+#        (each deploy renews it; `lease.sh <hours>` extends it),
+#      NODE_CAPACITY=spot|on-demand (default spot: spot nodes, on-demand only if spot has none).
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+
+lease "${KESTREL_LEASE_HOURS:-8}"
 
 STORAGE_MODE=${STORAGE_MODE:-dynamodb}
 if [ "${SKIP_CDK:-0}" != 1 ]; then
@@ -55,6 +60,48 @@ fi
 log "kubeconfig for $CLUSTER"
 aws eks update-kubeconfig --name "$CLUSTER" --alias "$KCTX" >/dev/null
 kubectl --context "$KCTX" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$KCTX" apply -f -
+
+# Workload nodes (the cluster has only Auto Mode's built-in `system` pool). Spot first, 2-4 vCPU,
+# current generations, at most 32 vCPU in all; nodes, volumes and ENIs tagged project=kestrel for
+# the KestrelCi budget.
+case "${NODE_CAPACITY:-spot}" in
+  spot) capacity='["spot", "on-demand"]' ;;
+  on-demand) capacity='["on-demand"]' ;;
+  *) die "NODE_CAPACITY must be spot or on-demand" ;;
+esac
+log "NodeClass + NodePool kestrel (capacity ${NODE_CAPACITY:-spot})"
+subnets=$(out KestrelRef PrivateSubnetIds | tr ',' '\n' | sed 's/^/    - id: /')
+kubectl --context "$KCTX" apply -f - <<YAML
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata: { name: kestrel }
+spec:
+  role: $(out KestrelRef NodeRoleName)
+  subnetSelectorTerms:
+$subnets
+  securityGroupSelectorTerms:
+    - id: $(out KestrelRef ClusterSecurityGroupId)
+  tags: { project: kestrel }
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata: { name: kestrel }
+spec:
+  template:
+    spec:
+      nodeClassRef: { group: eks.amazonaws.com, kind: NodeClass, name: kestrel }
+      requirements:
+        - { key: karpenter.sh/capacity-type, operator: In, values: $capacity }
+        - { key: eks.amazonaws.com/instance-category, operator: In, values: ["c", "m", "r"] }
+        - { key: eks.amazonaws.com/instance-generation, operator: Gt, values: ["4"] }
+        - { key: eks.amazonaws.com/instance-cpu, operator: In, values: ["2", "4"] }
+        - { key: kubernetes.io/arch, operator: In, values: ["amd64"] }
+      expireAfter: 24h
+  disruption:
+    consolidationPolicy: Balanced
+    consolidateAfter: 1m
+  limits: { cpu: "32" }
+YAML
 
 log "secrets"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT; chmod 700 "$tmp"

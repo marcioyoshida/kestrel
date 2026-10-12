@@ -14,6 +14,8 @@ if aws eks describe-cluster --name kestrel-ref >/dev/null 2>&1; then
   kubectl --context "$KCTX" -n "$NS" delete jobs -l 'app.kubernetes.io/component in (isolated,trigger)' --wait=false || true
   log "helm uninstall"
   helm --kube-context "$KCTX" -n "$NS" uninstall "$RELEASE" --wait --timeout 10m || true
+  # Deleting the NodePool terminates its nodes.
+  kubectl --context "$KCTX" delete nodepool kestrel --wait=false 2>/dev/null || true
   # Auto Mode nodes drain away once nothing is scheduled; wait so their ENIs don't block the VPC.
   for _ in $(seq 1 40); do
     n=$(kubectl --context "$KCTX" get nodes --no-headers 2>/dev/null | wc -l)
@@ -35,4 +37,5 @@ left=$(aws ec2 describe-instances --filters Name=tag:eks:eks-cluster-name,Values
   Name=instance-state-name,Values=pending,running,stopping,stopped \
   --query 'Reservations[].Instances[].InstanceId' --output text)
 [ -z "$left" ] || die "instances still tagged for kestrel-ref: $left"
+aws ssm delete-parameter --name "$LEASE_PARAM" 2>/dev/null || true
 echo "KestrelRef removed."

@@ -83,6 +83,13 @@ public class CronJobTemplate {
         env.addObject().put("name", "KESTREL_TIME_ZONE").put("value", bucket.getTimeZone());
         env.addObject().put("name", "KESTREL_JOB_NAME").putObject("valueFrom").putObject("fieldRef")
             .put("fieldPath", "metadata.labels['batch.kubernetes.io/job-name']");
+        if (!settings.sqsEndpoint.isEmpty()) {
+            // An SQS stand-in (ElasticMQ on kind): the AWS SDK's own endpoint variable, and fixed
+            // local credentials in place of Pod Identity.
+            env.addObject().put("name", "AWS_ENDPOINT_URL_SQS").put("value", settings.sqsEndpoint);
+            env.addObject().put("name", "AWS_ACCESS_KEY_ID").put("value", "local");
+            env.addObject().put("name", "AWS_SECRET_ACCESS_KEY").put("value", "local");
+        }
         ObjectNode res = c.putObject("resources");
         res.putObject("requests").put("cpu", "10m").put("memory", "16Mi");
         res.putObject("limits").put("memory", "32Mi");
@@ -103,6 +110,7 @@ public class CronJobTemplate {
         final String region;
         final int startingDeadlineSeconds;
         final Map<String, String> nodeSelector;
+        String sqsEndpoint = "";
 
         /**
          * @param image                   trigger image
@@ -121,6 +129,15 @@ public class CronJobTemplate {
             this.region = region;
             this.startingDeadlineSeconds = startingDeadlineSeconds;
             this.nodeSelector = new TreeMap<>(nodeSelector);
+        }
+
+        /**
+         * @param endpoint SQS-compatible endpoint for trigger pods (dev/test stand-in); empty = AWS
+         * @return these settings
+         */
+        public Settings sqsEndpoint(String endpoint) {
+            this.sqsEndpoint = endpoint == null ? "" : endpoint;
+            return this;
         }
     }
 }

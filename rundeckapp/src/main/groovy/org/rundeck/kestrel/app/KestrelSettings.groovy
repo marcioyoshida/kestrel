@@ -26,6 +26,8 @@ class KestrelSettings {
     String triggerImage
     String triggerServiceAccount = 'kestrel-trigger'
     Map<String, String> triggerNodeSelector = [:]
+    /** SQS stand-in endpoint (ElasticMQ on kind), passed on to trigger pods; empty = AWS. */
+    String sqsEndpoint = ''
     Duration resyncInterval = Duration.ofSeconds(30)
     Duration leaseDuration = Duration.ofSeconds(15)
     Duration handoffTimeout = Duration.ofSeconds(60)
@@ -57,6 +59,7 @@ class KestrelSettings {
         if (arch) {
             s.triggerNodeSelector = ['kubernetes.io/arch': arch]
         }
+        s.sqsEndpoint = prop(config, 'kestrel.sqs-endpoint', '')
         s.resyncInterval = Duration.ofSeconds(prop(config, 'kestrel.resync-seconds', '30').toLong())
         s.maxLateness = Duration.ofMinutes(prop(config, 'kestrel.max-lateness-minutes', '15').toLong())
         s.isolatedClasses = prop(config, 'kestrel.isolated.classes', '').split(',')*.trim().findAll { it } as List<String>

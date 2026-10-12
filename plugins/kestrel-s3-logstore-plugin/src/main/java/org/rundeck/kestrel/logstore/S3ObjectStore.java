@@ -1,5 +1,7 @@
 package org.rundeck.kestrel.logstore;
 
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -11,7 +13,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-/** {@link ObjectStore} on one S3 bucket; credentials from the default chain (EKS Pod Identity). */
+/**
+ * {@link ObjectStore} on one S3 bucket; credentials from the default chain (EKS Pod Identity).
+ * With {@code KESTREL_S3_ENDPOINT} set (an S3-compatible stand-in on kind), it uses that endpoint,
+ * path-style addressing and fixed local credentials instead.
+ */
 public class S3ObjectStore implements ObjectStore {
     private final S3Client s3;
     private final String bucket;
@@ -22,7 +28,13 @@ public class S3ObjectStore implements ObjectStore {
      */
     public S3ObjectStore(String bucket, String region) {
         this.bucket = bucket;
-        this.s3 = S3Client.builder().region(Region.of(region)).httpClientBuilder(UrlConnectionHttpClient.builder()).build();
+        var b = S3Client.builder().region(Region.of(region)).httpClientBuilder(UrlConnectionHttpClient.builder());
+        String endpoint = System.getenv("KESTREL_S3_ENDPOINT");
+        if (endpoint != null && !endpoint.isBlank()) {
+            b.endpointOverride(java.net.URI.create(endpoint)).forcePathStyle(true)
+             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("local", "local")));
+        }
+        this.s3 = b.build();
     }
 
     @Override
